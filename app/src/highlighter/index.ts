@@ -45,7 +45,11 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     install: () => import('codemirror/mode/javascript/javascript'),
     mappings: {
       '.ts': 'text/typescript',
+      '.mts': 'text/typescript',
+      '.cts': 'text/typescript',
       '.js': 'text/javascript',
+      '.mjs': 'text/javascript',
+      '.cjs': 'text/javascript',
       '.json': 'application/json',
     },
   },
@@ -59,7 +63,11 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     install: () => import('codemirror/mode/jsx/jsx'),
     mappings: {
       '.tsx': 'text/typescript-jsx',
+      '.mtsx': 'text/typescript-jsx',
+      '.ctsx': 'text/typescript-jsx',
       '.jsx': 'text/jsx',
+      '.mjsx': 'text/jsx',
+      '.cjsx': 'text/jsx',
     },
   },
   {
@@ -96,6 +104,7 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     mappings: {
       '.markdown': 'text/x-markdown',
       '.md': 'text/x-markdown',
+      '.mdx': 'text/x-markdown',
     },
   },
   {
@@ -110,6 +119,7 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     mappings: {
       '.xml': 'text/xml',
       '.xaml': 'text/xml',
+      '.xsd': 'text/xml',
       '.csproj': 'text/xml',
       '.fsproj': 'text/xml',
       '.vcxproj': 'text/xml',
@@ -140,6 +150,11 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
       '.h': 'text/x-c',
       '.cpp': 'text/x-c++src',
       '.hpp': 'text/x-c++src',
+      '.cc': 'text/x-c++src',
+      '.hh': 'text/x-c++src',
+      '.hxx': 'text/x-c++src',
+      '.cxx': 'text/x-c++src',
+      '.ino': 'text/x-c++src',
       '.kt': 'text/x-kotlin',
     },
   },
@@ -198,6 +213,8 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     install: () => import('codemirror/mode/python/python'),
     mappings: {
       '.py': 'text/x-python',
+      '.pyi': 'text/x-python',
+      '.vpy': 'text/x-python',
     },
   },
   {
@@ -260,9 +277,10 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     },
   },
   {
-    install: () => import('codemirror/mode/lua/lua'),
+    install: () => import('codemirror-mode-luau'),
     mappings: {
       '.lua': 'text/x-lua',
+      '.luau': 'text/x-luau',
     },
   },
   {
@@ -415,6 +433,18 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
       '.dart': 'application/dart',
     },
   },
+  {
+    install: () => import('codemirror-mode-zig'),
+    mappings: {
+      '.zig': 'text/x-zig',
+    },
+  },
+  {
+    install: () => import('codemirror/mode/cmake/cmake'),
+    mappings: {
+      '.cmake': 'text/x-cmake',
+    },
+  },
 ]
 
 /**
@@ -433,6 +463,12 @@ const basenameModes: ReadonlyArray<IModeDefinition> = [
     install: () => import('codemirror/mode/dockerfile/dockerfile'),
     mappings: {
       dockerfile: 'text/x-dockerfile',
+    },
+  },
+  {
+    install: () => import('codemirror/mode/toml/toml'),
+    mappings: {
+      'cargo.lock': 'text/x-toml',
     },
   },
 ]
@@ -578,8 +614,8 @@ function readToken(
   throw new Error(`Mode ${getModeName(mode)} failed to advance stream.`)
 }
 
-onmessage = async (ev: MessageEvent) => {
-  const request = ev.data as IHighlightRequest
+onmessage = async (ev: MessageEvent<IHighlightRequest>) => {
+  const request = ev.data
 
   const tabSize = request.tabSize || 4
   const addModeClass = request.addModeClass === true
@@ -627,7 +663,11 @@ onmessage = async (ev: MessageEvent) => {
       continue
     }
 
-    const lineCtx = { lines, line: ix }
+    const lineCtx = {
+      lines,
+      line: ix,
+      lookAhead: (n: number) => lines[ix + n],
+    }
     const lineStream = new StringStream(line, tabSize, lineCtx)
 
     while (!lineStream.eol()) {

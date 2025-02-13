@@ -1,5 +1,4 @@
-import { enableSquashMerging } from '../../lib/feature-flag'
-import { getCommitsBetweenCommits, getMergeBase } from '../../lib/git'
+import { getCommitsBetweenCommits } from '../../lib/git'
 import { promiseWithMinimumTimeout } from '../../lib/promise'
 import { Branch } from '../../models/branch'
 import { ComputedAction } from '../../models/computed-action'
@@ -9,29 +8,26 @@ import { Repository } from '../../models/repository'
 import { IDropdownSelectButtonOption } from '../dropdown-select-button'
 
 export function getMergeOptions(): ReadonlyArray<IDropdownSelectButtonOption> {
-  const mergeOptions = [
+  return [
     {
       label: 'Create a merge commit',
       description:
         'The commits from the selected branch will be added to the current branch via a merge commit.',
-      value: MultiCommitOperationKind.Merge,
+      id: MultiCommitOperationKind.Merge,
     },
-  ]
-  if (enableSquashMerging()) {
-    mergeOptions.push({
+    {
       label: 'Squash and merge',
       description:
         'The commits in the selected branch will be combined into one commit in the current branch.',
-      value: MultiCommitOperationKind.Squash,
-    })
-  }
-  mergeOptions.push({
-    label: 'Rebase',
-    description:
-      'The commits from the selected branch will be rebased and added to the current branch.',
-    value: MultiCommitOperationKind.Rebase,
-  })
-  return mergeOptions
+      id: MultiCommitOperationKind.Squash,
+    },
+    {
+      label: 'Rebase',
+      description:
+        'The commits from the selected branch will be rebased and added to the current branch.',
+      id: MultiCommitOperationKind.Rebase,
+    },
+  ]
 }
 
 export async function updateRebasePreview(
@@ -46,21 +42,15 @@ export async function updateRebasePreview(
     kind: ComputedAction.Loading,
   })
 
-  const { commits, base } = await promiseWithMinimumTimeout(async () => {
-    const commits = await getCommitsBetweenCommits(
-      repository,
-      baseBranch.tip.sha,
-      targetBranch.tip.sha
-    )
-
-    const base = await getMergeBase(
-      repository,
-      baseBranch.tip.sha,
-      targetBranch.tip.sha
-    )
-
-    return { commits, base }
-  }, 500)
+  const commits = await promiseWithMinimumTimeout(
+    () =>
+      getCommitsBetweenCommits(
+        repository,
+        baseBranch.tip.sha,
+        targetBranch.tip.sha
+      ),
+    500
+  )
 
   // if the branch being track has changed since we started this work, abandon
   // any further state updates (this function is re-entrant if the user is
@@ -79,14 +69,8 @@ export async function updateRebasePreview(
     return
   }
 
-  // the target branch is a direct descendant of the base branch
-  // which means the target branch is already up to date and the commits
-  // do not need to be applied
-  const isDirectDescendant = base === baseBranch.tip.sha
-  const commitsOrIgnore = isDirectDescendant ? [] : commits
-
   onUpdate({
     kind: ComputedAction.Clean,
-    commits: commitsOrIgnore,
+    commits,
   })
 }

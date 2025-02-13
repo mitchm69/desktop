@@ -1,6 +1,10 @@
 .dropdown-select-button {
   position: relative;
 
+  .dropdown-button-wrappers {
+    display: flex;
+  }
+
   &.open-bottom {
     .invoke-button {
       border-bottom-left-radius: 0;
@@ -13,7 +17,6 @@
     .dropdown-select-button-options {
       border-top-right-radius: 0;
       border-top-left-radius: 0;
-      border-top: none;
     }
   }
 
@@ -29,24 +32,20 @@
     .dropdown-select-button-options {
       border-bottom-right-radius: 0;
       border-bottom-left-radius: 0;
-      border-bottom: none;
     }
   }
 
   .invoke-button {
-    width: 88%;
     display: inline;
     border-bottom-right-radius: 0;
     border-top-right-radius: 0;
     margin-right: 0;
-    float: left;
     height: 30px;
-    // counter balances center for the 12% dropdown button
-    padding-left: 12% !important;
+    flex-grow: 1;
   }
 
   .dropdown-button {
-    width: 12%;
+    min-width: 30px;
     padding: var(--spacing-half);
     margin: 0;
     border-bottom-left-radius: 0;
@@ -79,35 +78,43 @@
     color: var(--text-color);
     background-color: var(--box-alt-background-color);
     background-clip: padding-box;
-    border: 1px solid var(--box-border-color);
     border-radius: var(--border-radius);
     z-index: 100;
     box-shadow: var(--base-box-shadow);
-    width: 99.9%;
+    width: 100%;
+    padding: 0;
+    margin: 0;
+    outline: 1px solid var(--box-border-color);
 
-    ul {
-      padding: 0;
-      margin: 0;
+    .menu-pane {
+      padding-bottom: 0;
+    }
 
-      li {
-        list-style-type: none;
-        padding: var(--spacing) var(--spacing-double);
-        padding-left: var(--spacing-triple);
-        border-bottom: 1px solid var(--box-border-color);
+    .menu-item {
+      border-bottom: 1px solid var(--box-border-color);
+      height: auto;
+      padding: var(--spacing) var(--spacing-double);
+      padding-left: var(--spacing-triple);
+      align-items: normal;
+      border-radius: 0;
 
-        .option-description {
-          color: var(--text-secondary-color);
-          font-size: var(--font-size-sm);
-        }
-
-        .selected-option-indicator {
-          position: absolute;
-          left: var(--spacing);
-        }
+      &:focus-visible {
+        outline: none;
       }
 
-      li:hover {
-        background-color: var(--box-selected-background-color);
+      .label {
+        margin-left: 0;
+        white-space: inherit;
+      }
+
+      .option-description {
+        color: var(--text-secondary-color);
+        font-size: var(--font-size-sm);
+      }
+
+      .icon {
+        position: absolute;
+        left: var(--spacing);
       }
     }
   }

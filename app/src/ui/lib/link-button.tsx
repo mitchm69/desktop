@@ -11,6 +11,12 @@ interface ILinkButtonProps {
   /** A function to call on click. */
   readonly onClick?: () => void
 
+  /** A function to call when mouse is hovered over */
+  readonly onMouseOver?: () => void
+
+  /** A function to call when mouse is moved off */
+  readonly onMouseOut?: () => void
+
   /** CSS classes attached to the component */
   readonly className?: string
 
@@ -22,6 +28,9 @@ interface ILinkButtonProps {
 
   /** title-text or tooltip for the link */
   readonly title?: string
+
+  /** aria-label for the link */
+  readonly ariaLabel?: string
 }
 
 /**
@@ -34,6 +43,13 @@ export class LinkButton extends React.Component<ILinkButtonProps, {}> {
 
   public render() {
     const href = this.props.uri || ''
+    /**
+     * If this component is to open something external like a link, it should
+     * have the role of link as is default by the <a> tag. If this component is
+     * to be used as a button, it should have the role of button. Otherwise,
+     * screen readers may be confused by the results of the click.
+     * */
+    const role = this.props.uri === undefined ? 'button' : undefined
     const className = classNames('link-button-component', this.props.className)
     const { title } = this.props
 
@@ -42,8 +58,14 @@ export class LinkButton extends React.Component<ILinkButtonProps, {}> {
         ref={this.anchorRef}
         className={className}
         href={href}
+        onMouseOver={this.props.onMouseOver}
+        onMouseOut={this.props.onMouseOut}
+        onFocus={this.props.onMouseOver}
+        onBlur={this.props.onMouseOut}
         onClick={this.onClick}
         tabIndex={this.props.tabIndex}
+        aria-label={this.props.ariaLabel}
+        role={role}
       >
         {title && <Tooltip target={this.anchorRef}>{title}</Tooltip>}
         {this.props.children}

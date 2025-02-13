@@ -12,6 +12,9 @@ import { ConfirmAbortDialog } from './dialog/confirm-abort-dialog'
 import { ProgressDialog } from './dialog/progress-dialog'
 import { WarnForcePushDialog } from './dialog/warn-force-push-dialog'
 import { PopupType } from '../../models/popup'
+import { Account } from '../../models/account'
+import { IAPIRepoRuleset } from '../../lib/api'
+import { Emoji } from '../../lib/emoji'
 
 export interface IMultiCommitOperationProps {
   readonly repository: Repository
@@ -24,13 +27,21 @@ export interface IMultiCommitOperationProps {
   readonly conflictState: ConflictState | null
 
   /** The emoji map for showing commit emoji's */
-  readonly emoji: Map<string, string>
+  readonly emoji: Map<string, Emoji>
 
   /** The current state of the working directory */
   readonly workingDirectory: WorkingDirectoryStatus
 
   /** Whether user should be warned about force pushing */
   readonly askForConfirmationOnForcePush: boolean
+
+  // react/no-unused-prop-types doesn't understand abstract classes and
+  // thinks these are unused but they are used in the subclasses.
+  // eslint-disable-next-line react/no-unused-prop-types
+  readonly accounts: ReadonlyArray<Account>
+
+  // eslint-disable-next-line react/no-unused-prop-types
+  readonly cachedRepoRulesets: ReadonlyMap<number, IAPIRepoRuleset>
 
   /**
    * Callbacks for the conflict selection components to let the user jump out
@@ -42,26 +53,14 @@ export interface IMultiCommitOperationProps {
 }
 
 /** A base component for the shared logic of multi commit operations. */
-export abstract class BaseMultiCommitOperation extends React.Component<
-  IMultiCommitOperationProps
-> {
-  protected abstract onBeginOperation = () => {}
-
-  protected abstract onChooseBranch = (targetBranch: Branch) => {}
-
-  protected abstract onContinueAfterConflicts = async (): Promise<void> => {}
-
-  protected abstract onAbort = async (): Promise<void> => {}
-
-  protected abstract onConflictsDialogDismissed = () => {}
-
-  protected abstract renderChooseBranch = (): JSX.Element | null => {
-    return null
-  }
-
-  protected abstract renderCreateBranch = (): JSX.Element | null => {
-    return null
-  }
+export abstract class BaseMultiCommitOperation extends React.Component<IMultiCommitOperationProps> {
+  protected abstract onBeginOperation: () => void
+  protected abstract onChooseBranch: (targetBranch: Branch) => void
+  protected abstract onContinueAfterConflicts: () => Promise<void>
+  protected abstract onAbort: () => Promise<void>
+  protected abstract onConflictsDialogDismissed: () => void
+  protected abstract renderChooseBranch: () => JSX.Element | null
+  protected abstract renderCreateBranch: () => JSX.Element | null
 
   protected onFlowEnded = () => {
     this.props.dispatcher.closePopup(PopupType.MultiCommitOperation)
@@ -105,6 +104,8 @@ export abstract class BaseMultiCommitOperation extends React.Component<
         {targetBranch !== null ? <strong>{targetBranch.name}</strong> : null}
       </>
     )
+
+    this.props.dispatcher.closePopup(PopupType.MultiCommitOperation)
     return dispatcher.onConflictsFoundBanner(
       repository,
       operationDescription,

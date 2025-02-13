@@ -2,7 +2,7 @@ import * as React from 'react'
 import { Dialog, DialogContent, DialogFooter } from '../dialog'
 import { Row } from '../lib/row'
 import { OkCancelButtonGroup } from '../dialog/ok-cancel-button-group'
-import { PullRequest } from '../../models/pull-request'
+import { PullRequest, getPullRequestCommitRef } from '../../models/pull-request'
 import { Dispatcher } from '../dispatcher'
 import { CICheckRunList } from '../check-runs/ci-check-run-list'
 import {
@@ -14,15 +14,17 @@ import {
 } from '../../lib/ci-checks/ci-checks'
 import { Account } from '../../models/account'
 import { API, IAPIWorkflowJobStep } from '../../lib/api'
-import { Octicon, syncClockwise } from '../octicons'
-import * as OcticonSymbol from '../octicons/octicons.generated'
-import { Button } from '../lib/button'
+import { Octicon } from '../octicons'
+import * as octicons from '../octicons/octicons.generated'
 import { RepositoryWithGitHubRepository } from '../../models/repository'
 import { CICheckRunActionsJobStepList } from '../check-runs/ci-check-run-actions-job-step-list'
-import { LinkButton } from '../lib/link-button'
 import { encodePathAsUrl } from '../../lib/path'
+import { PopupType } from '../../models/popup'
+import { CICheckReRunButton } from '../check-runs/ci-check-re-run-button'
+import { supportsRerunningIndividualOrFailedChecks } from '../../lib/endpoint-capabilities'
+import { CICheckRunNoStepItem } from '../check-runs/ci-check-run-no-steps'
+import { CICheckRunStepListHeader } from '../check-runs/ci-check-run-step-list-header'
 
-const PaperStackImage = encodePathAsUrl(__dirname, 'static/paper-stack.svg')
 const BlankSlateImage = encodePathAsUrl(
   __dirname,
   'static/empty-no-pull-requests.svg'
@@ -34,8 +36,6 @@ interface IPullRequestChecksFailedProps {
   readonly accounts: ReadonlyArray<Account>
   readonly repository: RepositoryWithGitHubRepository
   readonly pullRequest: PullRequest
-  readonly commitMessage: string
-  readonly commitSha: string
   readonly checks: ReadonlyArray<IRefCheck>
   readonly onSubmit: () => void
   readonly onDismissed: () => void
@@ -46,7 +46,6 @@ interface IPullRequestChecksFailedState {
   readonly selectedCheckID: number
   readonly checks: ReadonlyArray<IRefCheck>
   readonly loadingActionWorkflows: boolean
-  readonly loadingActionLogs: boolean
 }
 
 /**
@@ -69,7 +68,6 @@ export class PullRequestChecksFailed extends React.Component<
       selectedCheckID: selectedCheck.id,
       checks,
       loadingActionWorkflows: true,
-      loadingActionLogs: true,
     }
   }
 
@@ -80,7 +78,7 @@ export class PullRequestChecksFailed extends React.Component<
   }
 
   private get loadingChecksInfo(): boolean {
-    return this.state.loadingActionWorkflows || this.state.loadingActionLogs
+    return this.state.loadingActionWorkflows
   }
 
   public render() {
@@ -103,17 +101,16 @@ export class PullRequestChecksFailed extends React.Component<
 
     const header = (
       <div className="ci-check-run-dialog-header">
-        <Octicon symbol={OcticonSymbol.xCircleFill} />
+        <Octicon symbol={octicons.xCircleFill} />
         <div className="title-container">
           <div className="summary">
             {failedChecks.length} {pluralChecks} failed in your pull request
           </div>
           <span className="pr-title">
-            <span className="pr-title">{pullRequest.title}</span>{' '}
+            {pullRequest.title}{' '}
             <span className="pr-number">#{pullRequest.pullRequestNumber}</span>{' '}
           </span>
         </div>
-        {this.renderRerunButton()}
       </div>
     )
 
@@ -122,7 +119,8 @@ export class PullRequestChecksFailed extends React.Component<
         id="pull-request-checks-failed"
         type="normal"
         title={header}
-        dismissable={false}
+        renderHeaderAccessory={this.renderRerunButton}
+        backdropDismissable={false}
         onSubmit={this.props.onSubmit}
         onDismissed={this.props.onDismissed}
         loading={loadingChecksInfo || this.state.switchingToPullRequest}
@@ -144,6 +142,7 @@ export class PullRequestChecksFailed extends React.Component<
               onCancelButtonClick={this.props.onDismissed}
               cancelButtonText="Dismiss"
               okButtonText={okButtonTitle}
+              okButtonDisabled={this.state.switchingToPullRequest}
               onOkButtonClick={this.onSubmit}
             />
           </Row>
@@ -165,66 +164,85 @@ export class PullRequestChecksFailed extends React.Component<
     )
   }
 
+  private onRerunJob = (check: IRefCheck) => {
+    this.rerunChecks(false, [check])
+  }
+
   private renderCheckRunJobs() {
     return (
       <CICheckRunList
         checkRuns={this.state.checks}
-        loadingActionLogs={this.state.loadingActionLogs}
-        loadingActionWorkflows={this.state.loadingActionWorkflows}
         selectable={true}
         onViewCheckDetails={this.onViewOnGitHub}
         onCheckRunClick={this.onCheckRunClick}
+        onRerunJob={
+          supportsRerunningIndividualOrFailedChecks(
+            this.props.repository.gitHubRepository.endpoint
+          )
+            ? this.onRerunJob
+            : undefined
+        }
       />
     )
   }
 
-  private renderCheckRunSteps() {
-    const selectedCheck = this.selectedCheck
-    if (selectedCheck === undefined) {
-      return null
+  private checkRunStepContent() {
+    if (this.loadingChecksInfo) {
+      return this.renderCheckRunStepsLoading()
     }
 
-    let stepsContent = null
-
-    if (this.loadingChecksInfo) {
-      stepsContent = this.renderCheckRunStepsLoading()
-    } else if (selectedCheck.actionJobSteps === undefined) {
-      stepsContent = this.renderEmptyLogOutput()
-    } else {
-      stepsContent = (
-        <CICheckRunActionsJobStepList
-          steps={selectedCheck.actionJobSteps}
-          onViewJobStep={this.onViewJobStep}
+    if (this.selectedCheck?.actionJobSteps === undefined) {
+      return (
+        <CICheckRunNoStepItem
+          onViewCheckExternally={this.onViewSelectedCheckRunOnGitHub}
         />
       )
     }
 
     return (
-      <div className="ci-check-run-job-steps-container">{stepsContent}</div>
+      <>
+        <CICheckRunStepListHeader
+          checkRun={this.selectedCheck}
+          onRerunJob={
+            supportsRerunningIndividualOrFailedChecks(
+              this.props.repository.gitHubRepository.endpoint
+            )
+              ? this.onRerunJob
+              : undefined
+          }
+          onViewCheckExternally={this.onViewSelectedCheckRunOnGitHub}
+        />
+        <CICheckRunActionsJobStepList
+          steps={this.selectedCheck.actionJobSteps}
+          onViewJobStep={this.onViewJobStep}
+        />
+      </>
+    )
+  }
+
+  private renderCheckRunSteps() {
+    if (this.selectedCheck === undefined) {
+      return null
+    }
+
+    return (
+      <div
+        className="ci-check-run-job-steps-container"
+        role="region"
+        id={`checkrun-${this.selectedCheck.id}`}
+        aria-labelledby={`check-run-header-${this.selectedCheck.id}`}
+      >
+        {this.checkRunStepContent()}
+      </div>
     )
   }
 
   private renderCheckRunStepsLoading(): JSX.Element {
     return (
       <div className="loading-check-runs">
-        <img src={BlankSlateImage} className="blankslate-image" />
+        <img src={BlankSlateImage} className="blankslate-image" alt="" />
         <div className="title">Stand By</div>
         <div className="call-to-action">Check run steps incoming!</div>
-      </div>
-    )
-  }
-  private renderEmptyLogOutput() {
-    return (
-      <div className="no-steps-to-display">
-        <div className="text">
-          There are no steps to display for this check.
-          <div>
-            <LinkButton onClick={this.onViewSelectedCheckRunOnGitHub}>
-              View check details
-            </LinkButton>
-          </div>
-        </div>
-        <img src={PaperStackImage} className="blankslate-image" />
       </div>
     )
   }
@@ -261,18 +279,35 @@ export class PullRequestChecksFailed extends React.Component<
     const { checks } = this.state
     return (
       <div className="ci-check-rerun">
-        <Button onClick={this.rerunChecks} disabled={checks.length === 0}>
-          <Octicon symbol={syncClockwise} /> Re-run checks
-        </Button>
+        <CICheckReRunButton
+          disabled={checks.length === 0}
+          checkRuns={checks}
+          canReRunFailed={supportsRerunningIndividualOrFailedChecks(
+            this.props.repository.gitHubRepository.endpoint
+          )}
+          onRerunChecks={this.rerunChecks}
+        />
       </div>
     )
   }
 
-  private rerunChecks = () => {
-    this.props.dispatcher.rerequestCheckSuites(
-      this.props.repository.gitHubRepository,
-      this.state.checks
+  private rerunChecks = (
+    failedOnly: boolean,
+    checks?: ReadonlyArray<IRefCheck>
+  ) => {
+    this.props.dispatcher.incrementMetric('checksFailedDialogRerunChecksCount')
+
+    const prRef = getPullRequestCommitRef(
+      this.props.pullRequest.pullRequestNumber
     )
+
+    this.props.dispatcher.showPopup({
+      type: PopupType.CICheckRunRerun,
+      checkRuns: checks ?? this.state.checks,
+      repository: this.props.repository.gitHubRepository,
+      prRef,
+      failedOnly,
+    })
   }
 
   private async loadCheckRunLogs() {
@@ -284,10 +319,7 @@ export class PullRequestChecksFailed extends React.Component<
     )
 
     if (account === undefined) {
-      this.setState({
-        loadingActionWorkflows: false,
-        loadingActionLogs: false,
-      })
+      this.setState({ loadingActionWorkflows: false })
       return
     }
 
@@ -302,7 +334,7 @@ export class PullRequestChecksFailed extends React.Component<
       a check run does not have action logs to retrieve/parse.
     */
     const checkRunsWithActionsUrls = await getCheckRunActionsWorkflowRuns(
-      api,
+      account,
       gitHubRepository.owner.login,
       gitHubRepository.name,
       pullRequest.head.ref,
@@ -313,10 +345,7 @@ export class PullRequestChecksFailed extends React.Component<
       return
     }
 
-    this.setState({
-      checks: checkRunsWithActionsUrls,
-      loadingActionWorkflows: false,
-    })
+    this.setState({ checks: checkRunsWithActionsUrls })
 
     const checks = await getLatestPRWorkflowRunsLogsForCheckRun(
       api,
@@ -329,7 +358,7 @@ export class PullRequestChecksFailed extends React.Component<
       return
     }
 
-    this.setState({ checks, loadingActionLogs: false })
+    this.setState({ checks, loadingActionWorkflows: false })
   }
 
   private onCheckRunClick = (checkRun: IRefCheck): void => {
@@ -363,6 +392,10 @@ export class PullRequestChecksFailed extends React.Component<
   private onSubmit = async (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault()
     const { dispatcher, repository, pullRequest } = this.props
+
+    this.props.dispatcher.incrementMetric(
+      'checksFailedDialogSwitchToPullRequestCount'
+    )
 
     this.setState({ switchingToPullRequest: true })
     await dispatcher.selectRepository(repository)

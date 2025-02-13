@@ -122,7 +122,7 @@ export interface IDailyMeasures {
    */
   readonly enterpriseCommits: number
 
-  /** The number of times the user made a commit to a repo hosted on Github.com */
+  /** The number of times the user made a commit to a repo hosted on GitHub.com */
   readonly dotcomCommits: number
 
   /** The number of times the user made a commit to a protected GitHub or GitHub Enterprise repository */
@@ -146,8 +146,15 @@ export interface IDailyMeasures {
   /** The number of times the user committed a conflicted merge outside the merge conflicts dialog */
   readonly unguidedConflictedMergeCompletionCount: number
 
-  /** The number of times the user is taken to the create pull request page on dotcom */
+  /** The number of times the user is taken to the create pull request page on dotcom including.
+   *
+   * NB - This metric tracks all times including when
+   * `createPullRequestFromPreviewCount` this is tracked.
+   * */
   readonly createPullRequestCount: number
+
+  /** The number of times the user is taken to the create pull request page on dotcom from the preview dialog */
+  readonly createPullRequestFromPreviewCount: number
 
   /** The number of times the rebase conflicts dialog is dismissed */
   readonly rebaseConflictsDialogDismissalCount: number
@@ -163,6 +170,9 @@ export interface IDailyMeasures {
 
   /** The number of times a successful rebase without conflicts is detected */
   readonly rebaseSuccessWithoutConflictsCount: number
+
+  /** The number of times a rebase finishes without effect because the branch was already up-to-date */
+  readonly rebaseWithBranchAlreadyUpToDateCount: number
 
   /** The number of times a user performed a pull with `pull.rebase` in config set to `true` */
   readonly pullWithRebaseCount: number
@@ -463,11 +473,139 @@ export interface IDailyMeasures {
 
   /** The number of times the user reruns checks */
   readonly rerunsChecks: number
+
+  /** The number of "checks failed" notifications the user received */
+  readonly checksFailedNotificationCount: number
+
+  /**
+   * The number of "checks failed" notifications the user received for a recent
+   * repository other than the selected one.
+   */
+  readonly checksFailedNotificationFromRecentRepoCount: number
+
+  /**
+   * The number of "checks failed" notifications the user received for a
+   * non-recent repository other than the selected one.
+   */
+  readonly checksFailedNotificationFromNonRecentRepoCount: number
+
+  /** The number of "checks failed" notifications the user clicked */
+  readonly checksFailedNotificationClicked: number
+
+  /** The number of times the "checks failed" dialog was opened */
+  readonly checksFailedDialogOpenCount: number
+
+  /**
+   * The number of times the user decided to switch to the affected pull request
+   * from the "checks failed" dialog.
+   */
+  readonly checksFailedDialogSwitchToPullRequestCount: number
+
+  /**
+   * The number of times the user decided to re-run the checks from the "checks
+   * failed" dialog.
+   */
+  readonly checksFailedDialogRerunChecksCount: number
+
+  /**
+   * The number of PR review notifications the user received for a recent
+   * repository other than the selected one.
+   */
+  readonly pullRequestReviewNotificationFromRecentRepoCount: number
+
+  /**
+   * The number of PR review notifications the user received for a non-recent
+   * repository other than the selected one.
+   */
+  readonly pullRequestReviewNotificationFromNonRecentRepoCount: number
+
+  /** The number of "approved PR" notifications the user received */
+  readonly pullRequestReviewApprovedNotificationCount: number
+
+  /** The number of "approved PR" notifications the user clicked */
+  readonly pullRequestReviewApprovedNotificationClicked: number
+
+  /**
+   * The number of times the user decided to switch to the affected pull request
+   * from the "approved PR" dialog.
+   */
+  readonly pullRequestReviewApprovedDialogSwitchToPullRequestCount: number
+
+  /** The number of "commented PR" notifications the user received */
+  readonly pullRequestReviewCommentedNotificationCount: number
+
+  /** The number of "commented PR" notifications the user clicked */
+  readonly pullRequestReviewCommentedNotificationClicked: number
+
+  /**
+   * The number of times the user decided to switch to the affected pull request
+   * from the "commented PR" dialog.
+   */
+  readonly pullRequestReviewCommentedDialogSwitchToPullRequestCount: number
+
+  /** The number of "changes requested" notifications the user received */
+  readonly pullRequestReviewChangesRequestedNotificationCount: number
+
+  /** The number of "changes requested" notifications the user clicked */
+  readonly pullRequestReviewChangesRequestedNotificationClicked: number
+
+  /**
+   * The number of times the user decided to switch to the affected pull request
+   * from the "changes requested" dialog.
+   */
+  readonly pullRequestReviewChangesRequestedDialogSwitchToPullRequestCount: number
+
+  /** The number of "commented PR" notifications the user received */
+  readonly pullRequestCommentNotificationCount: number
+
+  /** The number of "commented PR" notifications the user clicked */
+  readonly pullRequestCommentNotificationClicked: number
+
+  /**
+   * The number of PR comment notifications the user received for a non-recent
+   * repository other than the selected one.
+   */
+  readonly pullRequestCommentNotificationFromNonRecentRepoCount: number
+  /**
+   * The number of PR comment notifications the user received for a recent
+   * repository other than the selected one.
+   */
+  readonly pullRequestCommentNotificationFromRecentRepoCount: number
+
+  /**
+   * The number of times the user decided to switch to the affected pull request
+   * from the PR comment dialog.
+   */
+  readonly pullRequestCommentDialogSwitchToPullRequestCount: number
+
+  /** The number of times the user did a multi commit diff where there were unreachable commits */
+  readonly multiCommitDiffWithUnreachableCommitWarningCount: number
+
+  /** The number of times the user does a multi commit diff from the history view */
+  readonly multiCommitDiffFromHistoryCount: number
+
+  /** The number of times the user does a multi commit diff from the compare */
+  readonly multiCommitDiffFromCompareCount: number
+
+  /** The number of times the user opens the unreachable commits dialog */
+  readonly multiCommitDiffUnreachableCommitsDialogOpenedCount: number
+
+  /** The number of times the user opens a submodule diff from the changes list */
+  readonly submoduleDiffViewedFromChangesListCount: number
+
+  /** The number of times the user opens a submodule diff from the History view */
+  readonly submoduleDiffViewedFromHistoryCount: number
+
+  /** The number of times the user opens a submodule repository from its diff */
+  readonly openSubmoduleFromDiffCount: number
+
+  /** The number of times a user has opened the preview pull request dialog */
+  readonly previewedPullRequestCount: number
 }
 
 export class StatsDatabase extends Dexie {
-  public launches!: Dexie.Table<ILaunchStats, number>
-  public dailyMeasures!: Dexie.Table<IDailyMeasures, number>
+  public declare launches: Dexie.Table<ILaunchStats, number>
+  public declare dailyMeasures: Dexie.Table<IDailyMeasures, number>
 
   public constructor(name: string) {
     super(name)

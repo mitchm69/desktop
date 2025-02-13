@@ -28,9 +28,20 @@ function enableBetaFeatures(): boolean {
   return enableDevelopmentFeatures() || __RELEASE_CHANNEL__ === 'beta'
 }
 
+/**
+ * Should the app show menu items that are used for testing various parts of the
+ * UI
+ *
+ * For our own testing purposes, this will likely remain enabled. But, sometimes
+ * we may want to create a test release for a user to test a fix in which case
+ * they should not need access to the test menu items.
+ */
+export const enableTestMenuItems = () =>
+  enableDevelopmentFeatures() || __RELEASE_CHANNEL__ === 'test'
+
 /** Should git pass `--recurse-submodules` when performing operations? */
 export function enableRecurseSubmodulesFlag(): boolean {
-  return enableBetaFeatures()
+  return true
 }
 
 export function enableReadmeOverwriteWarning(): boolean {
@@ -42,28 +53,11 @@ export function enableWSLDetection(): boolean {
   return enableBetaFeatures()
 }
 
-/** Should the app show hide whitespace in changes tab */
-export function enableHideWhitespaceInDiffOption(): boolean {
-  return true
-}
-
-/**
- * Should we use the new diff viewer for unified diffs?
- */
-export function enableExperimentalDiffViewer(): boolean {
-  return false
-}
-
 /**
  * Should we allow reporting unhandled rejections as if they were crashes?
  */
 export function enableUnhandledRejectionReporting(): boolean {
   return enableBetaFeatures()
-}
-
-/** Should we allow expanding text diffs? */
-export function enableTextDiffExpansion(): boolean {
-  return true
 }
 
 /**
@@ -78,79 +72,14 @@ export function enableUpdateFromEmulatedX64ToARM64(): boolean {
   return enableBetaFeatures()
 }
 
-/** Should we allow using the save dialog when choosing where to clone a repo */
-export function enableSaveDialogOnCloneRepository(): boolean {
-  return true
-}
-
-/** Should we allow setting repository aliases? */
-export function enableRepositoryAliases(): boolean {
-  return true
-}
-
-/** Should we allow to create branches from a commit? */
-export function enableBranchFromCommit(): boolean {
-  return true
-}
-
-/** Should we allow squashing? */
-export function enableSquashing(): boolean {
-  return true
-}
-
-/** Should we allow squash-merging? */
-export function enableSquashMerging(): boolean {
-  return true
-}
-
-/** Should we allow amending commits? */
-export function enableAmendingCommits(): boolean {
-  return true
-}
-
-/** Should we allow reordering commits? */
-export function enableCommitReordering(): boolean {
-  return true
-}
-
 /** Should we allow resetting to a previous commit? */
 export function enableResetToCommit(): boolean {
-  return enableDevelopmentFeatures()
-}
-
-/** Should we show line changes (added/deleted) in commits? */
-export function enableLineChangesInCommit(): boolean {
   return true
 }
 
-/** Should we allow high contrast theme option */
-export function enableHighContrastTheme(): boolean {
-  return enableBetaFeatures()
-}
-
-/** Should we allow customizing a theme */
-export function enableCustomizeTheme(): boolean {
-  return enableBetaFeatures()
-}
-
-/** Should we allow using Windows' OpenSSH? */
-export function enableWindowsOpenSSH(): boolean {
+/** Should we allow checking out a single commit? */
+export function enableCheckoutCommit(): boolean {
   return true
-}
-
-/** Should we use SSH askpass? */
-export function enableSSHAskPass(): boolean {
-  return true
-}
-
-/** Should we show ci check runs? */
-export function enableCICheckRuns(): boolean {
-  return true
-}
-
-/** Should ci check runs show logs? */
-export function enableCICheckRunsLogs(): boolean {
-  return false
 }
 
 /** Should we show previous tags as suggestions? */
@@ -163,7 +92,14 @@ export function enablePullRequestQuickView(): boolean {
   return enableDevelopmentFeatures()
 }
 
-/** Should we enable high-signal notifications? */
-export function enableHighSignalNotifications(): boolean {
-  return enableDevelopmentFeatures()
+/** Should we support image previews for dds files? */
+export function enableImagePreviewsForDDSFiles(): boolean {
+  return enableBetaFeatures()
 }
+
+export const enableCustomIntegration = () => true
+
+export const enableResizingToolbarButtons = () => true
+export const enableGitConfigParameters = enableBetaFeatures
+
+export const enableFilteredChangesList = enableDevelopmentFeatures

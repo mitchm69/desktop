@@ -3,7 +3,6 @@ import { Account, accountEquals } from '../../models/account'
 import { API } from '../api'
 import { AliveSession, AliveEvent, Subscription } from '@github/alive-client'
 import { Emitter } from 'event-kit'
-import { enableHighSignalNotifications } from '../feature-flag'
 import { supportsAliveSessions } from '../endpoint-capabilities'
 
 /** Checks whether or not an account is included in a list of accounts. */
@@ -21,8 +20,31 @@ export interface IDesktopChecksFailedAliveEvent {
   readonly commit_sha: string
 }
 
+export interface IDesktopPullRequestReviewSubmitAliveEvent {
+  readonly type: 'pr-review-submit'
+  readonly timestamp: number
+  readonly owner: string
+  readonly repo: string
+  readonly pull_request_number: number
+  readonly state: 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED'
+  readonly review_id: string
+}
+
+export interface IDesktopPullRequestCommentAliveEvent {
+  readonly type: 'pr-comment'
+  readonly subtype: 'review-comment' | 'issue-comment'
+  readonly timestamp: number
+  readonly owner: string
+  readonly repo: string
+  readonly pull_request_number: number
+  readonly comment_id: string
+}
+
 /** Represents an Alive event relevant to Desktop. */
-export type DesktopAliveEvent = IDesktopChecksFailedAliveEvent
+export type DesktopAliveEvent =
+  | IDesktopChecksFailedAliveEvent
+  | IDesktopPullRequestReviewSubmitAliveEvent
+  | IDesktopPullRequestCommentAliveEvent
 interface IAliveSubscription {
   readonly account: Account
   readonly subscription: Subscription<AliveStore>
@@ -40,10 +62,8 @@ interface IAliveEndpointSession {
 export class AliveStore {
   private readonly ALIVE_EVENT_RECEIVED_EVENT = 'alive-event-received'
 
-  private readonly sessionPerEndpoint: Map<
-    string,
-    IAliveEndpointSession
-  > = new Map()
+  private readonly sessionPerEndpoint: Map<string, IAliveEndpointSession> =
+    new Map()
   private readonly emitter = new Emitter()
   private subscriptions: Array<IAliveSubscription> = []
   private enabled: boolean = false
@@ -96,7 +116,7 @@ export class AliveStore {
   }
 
   private subscribeToAccounts = async (accounts: ReadonlyArray<Account>) => {
-    if (!this.enabled || !enableHighSignalNotifications()) {
+    if (!this.enabled) {
       return
     }
 
@@ -144,7 +164,14 @@ export class AliveStore {
     }
 
     const api = API.fromAccount(account)
-    const webSocketUrl = await api.getAliveWebSocketURL()
+    let webSocketUrl = null
+
+    try {
+      webSocketUrl = await api.getAliveWebSocketURL()
+    } catch (e) {
+      log.error(`Could not get Alive web socket URL for '${account.login}'`, e)
+      return null
+    }
 
     if (webSocketUrl === null) {
       return null
@@ -229,8 +256,12 @@ export class AliveStore {
       return
     }
 
-    const data = (event.data as any) as DesktopAliveEvent
-    if (data.type === 'pr-checks-failed') {
+    const data = event.data as any as DesktopAliveEvent
+    if (
+      data.type === 'pr-checks-failed' ||
+      data.type === 'pr-review-submit' ||
+      data.type === 'pr-comment'
+    ) {
       this.emitter.emit(this.ALIVE_EVENT_RECEIVED_EVENT, data)
     }
   }

@@ -1,15 +1,22 @@
-import { getKeyForEndpoint } from '../auth'
 import {
   getSSHKeyPassphrase,
-  keepSSHKeyPassphraseToStore,
-  removePendingSSHKeyPassphraseToStore,
+  setMostRecentSSHKeyPassphrase,
+  setSSHKeyPassphrase,
 } from '../ssh/ssh-key-passphrase'
-import { TokenStore } from '../stores'
+import { AccountsStore } from '../stores/accounts-store'
 import { TrampolineCommandHandler } from './trampoline-command'
 import { trampolineUIHelper } from './trampoline-ui-helper'
 import { parseAddSSHHostPrompt } from '../ssh/ssh'
+import {
+  getSSHUserPassword,
+  setMostRecentSSHUserPassword,
+  setSSHUserPassword,
+} from '../ssh/ssh-user-password'
+import { removeMostRecentSSHCredential } from '../ssh/ssh-credential-storage'
+import { getIsBackgroundTaskEnvironment } from './trampoline-environment'
 
 async function handleSSHHostAuthenticity(
+  operationGUID: string,
   prompt: string
 ): Promise<'yes' | 'no' | undefined> {
   const info = parseAddSSHHostPrompt(prompt)
@@ -27,6 +34,13 @@ async function handleSSHHostAuthenticity(
     info.fingerprint === 'SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8'
   ) {
     return 'yes'
+  }
+
+  if (getIsBackgroundTaskEnvironment(operationGUID)) {
+    log.debug(
+      'handleSSHHostAuthenticity: background task environment, skipping prompt'
+    )
+    return undefined
   }
 
   const addHost = await trampolineUIHelper.promptAddingSSHHost(
@@ -62,13 +76,21 @@ async function handleSSHKeyPassphrase(
 
   const storedPassphrase = await getSSHKeyPassphrase(keyPath)
   if (storedPassphrase !== null) {
+    // Keep this stored passphrase around in case it's not valid and we need to
+    // delete it if the git operation fails to authenticate.
+    await setMostRecentSSHKeyPassphrase(operationGUID, keyPath)
     return storedPassphrase
   }
 
-  const {
-    passphrase,
-    storePassphrase,
-  } = await trampolineUIHelper.promptSSHKeyPassphrase(keyPath)
+  if (getIsBackgroundTaskEnvironment(operationGUID)) {
+    log.debug(
+      'handleSSHKeyPassphrase: background task environment, skipping prompt'
+    )
+    return undefined
+  }
+
+  const { secret: passphrase, storeSecret: storePassphrase } =
+    await trampolineUIHelper.promptSSHKeyPassphrase(keyPath)
 
   // If the user wanted us to remember the passphrase, we'll keep it around to
   // store it later if the git operation succeeds.
@@ -78,46 +100,72 @@ async function handleSSHKeyPassphrase(
   // when, in one of those multiple attempts, the user chooses NOT to remember
   // the passphrase.
   if (passphrase !== undefined && storePassphrase) {
-    keepSSHKeyPassphraseToStore(operationGUID, keyPath, passphrase)
+    setSSHKeyPassphrase(operationGUID, keyPath, passphrase)
   } else {
-    removePendingSSHKeyPassphraseToStore(operationGUID)
+    removeMostRecentSSHCredential(operationGUID)
   }
 
   return passphrase ?? ''
 }
 
-export const askpassTrampolineHandler: TrampolineCommandHandler = async command => {
-  if (command.parameters.length !== 1) {
+async function handleSSHUserPassword(operationGUID: string, prompt: string) {
+  const promptRegex = /^(.+@.+)'s password: $/
+
+  const matches = promptRegex.exec(prompt)
+  if (matches === null || matches.length < 2) {
     return undefined
   }
 
-  const firstParameter = command.parameters[0]
+  const username = matches[1]
 
-  if (firstParameter.startsWith('The authenticity of host ')) {
-    return handleSSHHostAuthenticity(firstParameter)
+  const storedPassword = await getSSHUserPassword(username)
+  if (storedPassword !== null) {
+    // Keep this stored password around in case it's not valid and we need to
+    // delete it if the git operation fails to authenticate.
+    setMostRecentSSHUserPassword(operationGUID, username)
+    return storedPassword
   }
 
-  if (firstParameter.startsWith('Enter passphrase for key ')) {
-    return handleSSHKeyPassphrase(command.trampolineToken, firstParameter)
-  }
-
-  const username = command.environmentVariables.get('DESKTOP_USERNAME')
-  if (username === undefined || username.length === 0) {
+  if (getIsBackgroundTaskEnvironment(operationGUID)) {
+    log.debug(
+      'handleSSHUserPassword: background task environment, skipping prompt'
+    )
     return undefined
   }
 
-  if (firstParameter.startsWith('Username')) {
-    return username
-  } else if (firstParameter.startsWith('Password')) {
-    const endpoint = command.environmentVariables.get('DESKTOP_ENDPOINT')
-    if (endpoint === undefined || endpoint.length === 0) {
+  const { secret: password, storeSecret: storePassword } =
+    await trampolineUIHelper.promptSSHUserPassword(username)
+
+  if (password !== undefined && storePassword) {
+    setSSHUserPassword(operationGUID, username, password)
+  } else {
+    removeMostRecentSSHCredential(operationGUID)
+  }
+
+  return password ?? ''
+}
+
+export const createAskpassTrampolineHandler: (
+  accountsStore: AccountsStore
+) => TrampolineCommandHandler =
+  (accountsStore: AccountsStore) => async command => {
+    if (command.parameters.length !== 1) {
       return undefined
     }
 
-    const key = getKeyForEndpoint(endpoint)
-    const token = await TokenStore.getItem(key, username)
-    return token ?? undefined
-  }
+    const firstParameter = command.parameters[0]
 
-  return undefined
-}
+    if (firstParameter.startsWith('The authenticity of host ')) {
+      return handleSSHHostAuthenticity(command.trampolineToken, firstParameter)
+    }
+
+    if (firstParameter.startsWith('Enter passphrase for key ')) {
+      return handleSSHKeyPassphrase(command.trampolineToken, firstParameter)
+    }
+
+    if (firstParameter.endsWith("'s password: ")) {
+      return handleSSHUserPassword(command.trampolineToken, firstParameter)
+    }
+
+    return undefined
+  }

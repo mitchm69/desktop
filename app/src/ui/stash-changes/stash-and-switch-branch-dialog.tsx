@@ -7,7 +7,7 @@ import { Row } from '../lib/row'
 import { Branch } from '../../models/branch'
 import { UncommittedChangesStrategy } from '../../models/uncommitted-changes-strategy'
 import { Octicon } from '../octicons'
-import * as OcticonSymbol from '../octicons/octicons.generated'
+import * as octicons from '../octicons/octicons.generated'
 import { PopupType } from '../../models/popup'
 import { startTimer } from '../lib/timing'
 import { OkCancelButtonGroup } from '../dialog/ok-cancel-button-group'
@@ -88,7 +88,7 @@ export class StashAndSwitchBranch extends React.Component<
 
     return (
       <Row>
-        <Octicon symbol={OcticonSymbol.alert} /> Your current stash will be
+        <Octicon symbol={octicons.alert} /> Your current stash will be
         overwritten by creating a new stash
       </Row>
     )
@@ -127,12 +127,8 @@ export class StashAndSwitchBranch extends React.Component<
   }
 
   private onSubmit = async () => {
-    const {
-      repository,
-      branchToCheckout,
-      dispatcher,
-      hasAssociatedStash,
-    } = this.props
+    const { repository, branchToCheckout, dispatcher, hasAssociatedStash } =
+      this.props
     const { selectedStashAction } = this.state
 
     if (

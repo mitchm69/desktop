@@ -1,7 +1,7 @@
 import * as Path from 'path'
 
 import { Account } from '../../../models/account'
-import { writeFile, pathExists, ensureDir } from 'fs-extra'
+import { mkdir, writeFile } from 'fs/promises'
 import { API } from '../../api'
 import { APIError } from '../../http'
 import {
@@ -13,6 +13,7 @@ import { friendlyEndpointName } from '../../friendly-endpoint-name'
 import { IRemote } from '../../../models/remote'
 import { getDefaultBranch } from '../../helpers/default-branch'
 import { envForRemoteOperation } from '../../git/environment'
+import { pathExists } from '../../../ui/lib/path-exists'
 
 const nl = __WIN32__ ? '\r\n' : '\n'
 const InitialReadmeContents =
@@ -72,7 +73,7 @@ async function pushRepo(
 
   const pushOpts = await executionOptionsWithProgress(
     {
-      env: await envForRemoteOperation(account, remote.url),
+      env: await envForRemoteOperation(remote.url),
     },
     new PushProgressParser(),
     progress => {
@@ -118,7 +119,7 @@ export async function createTutorialRepository(
   const branch = repo.default_branch ?? (await getDefaultBranch())
   progressCb('Initializing local repository', 0.2)
 
-  await ensureDir(path)
+  await mkdir(path, { recursive: true })
 
   await git(
     ['-c', `init.defaultBranch=${branch}`, 'init'],

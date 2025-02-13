@@ -11,13 +11,8 @@ import { BaseMultiCommitOperation } from './base-multi-commit-operation'
 
 export abstract class CherryPick extends BaseMultiCommitOperation {
   protected onContinueAfterConflicts = async (): Promise<void> => {
-    const {
-      repository,
-      dispatcher,
-      workingDirectory,
-      state,
-      conflictState,
-    } = this.props
+    const { repository, dispatcher, workingDirectory, state, conflictState } =
+      this.props
     const { operationDetail, targetBranch } = state
 
     if (
@@ -84,6 +79,7 @@ export abstract class CherryPick extends BaseMultiCommitOperation {
     return (
       <ChooseTargetBranchDialog
         key="choose-target-branch"
+        repository={this.props.repository}
         allBranches={allBranches}
         defaultBranch={defaultBranch}
         recentBranches={recentBranches}
@@ -135,6 +131,8 @@ export abstract class CherryPick extends BaseMultiCommitOperation {
         defaultBranch={defaultBranch}
         upstreamDefaultBranch={upstreamDefaultBranch}
         upstreamGitHubRepository={upstreamGhRepo}
+        accounts={this.props.accounts}
+        cachedRepoRulesets={this.props.cachedRepoRulesets}
         allBranches={allBranches}
         repository={repository}
         onDismissed={this.onFlowEnded}
@@ -160,7 +158,7 @@ export abstract class CherryPick extends BaseMultiCommitOperation {
     }
 
     const { commits, sourceBranch } = operationDetail
-
+    dispatcher.setMultiCommitOperationTargetBranch(repository, targetBranch)
     dispatcher.setCherryPickBranchCreated(repository, false)
     dispatcher.cherryPick(repository, targetBranch, commits, sourceBranch)
   }

@@ -1,5 +1,10 @@
 import { GitHubRepository } from './github-repository'
 
+/** Returns the commit ref for a given pull request number. */
+export function getPullRequestCommitRef(pullRequestNumber: number) {
+  return `refs/pull/${pullRequestNumber}/head`
+}
+
 export class PullRequestRef {
   /**
    * @param ref The name of the ref.
@@ -36,3 +41,24 @@ export class PullRequest {
     public readonly body: string
   ) {}
 }
+
+/** The types of pull request suggested next actions */
+export enum PullRequestSuggestedNextAction {
+  PreviewPullRequest = 'PreviewPullRequest',
+  CreatePullRequest = 'CreatePullRequest',
+}
+
+/** Type guard which narrows a string to a PullRequestSuggestedNextAction */
+export function isIdPullRequestSuggestedNextAction(
+  id: string
+): id is
+  | PullRequestSuggestedNextAction.PreviewPullRequest
+  | PullRequestSuggestedNextAction.CreatePullRequest {
+  return (
+    id === PullRequestSuggestedNextAction.PreviewPullRequest ||
+    id === PullRequestSuggestedNextAction.CreatePullRequest
+  )
+}
+
+export const defaultPullRequestSuggestedNextAction =
+  PullRequestSuggestedNextAction.PreviewPullRequest

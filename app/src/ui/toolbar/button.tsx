@@ -1,11 +1,13 @@
 import * as React from 'react'
-import { Octicon, OcticonSymbolType } from '../octicons'
+import { Octicon, OcticonSymbol } from '../octicons'
 import classNames from 'classnames'
 import { assertNever } from '../../lib/fatal-error'
 import { Button } from '../lib/button'
 import { clamp } from '../../lib/clamp'
 import { createObservableRef } from '../lib/observable-ref'
 import { Tooltip, TooltipDirection, TooltipTarget } from '../lib/tooltip'
+import { AriaHasPopupType } from '../lib/aria-types'
+import { enableResizingToolbarButtons } from '../../lib/feature-flag'
 
 /** The button style. */
 export enum ToolbarButtonStyle {
@@ -27,7 +29,7 @@ export interface IToolbarButtonProps {
   readonly tooltip?: string
 
   /** An optional symbol to be displayed next to the button text */
-  readonly icon?: OcticonSymbolType
+  readonly icon?: OcticonSymbol
 
   /** The class name for the icon element. */
   readonly iconClassName?: string
@@ -39,16 +41,17 @@ export interface IToolbarButtonProps {
   readonly onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void
 
   /**
+   * An optional event handler for when the button's context menu
+   * is activated by a pointer event or by hitting the menu key
+   * while focused.
+   */
+  readonly onContextMenu?: (event: React.MouseEvent<HTMLButtonElement>) => void
+
+  /**
    * A function that's called when the user hovers over the button with
    * a pointer device.
    */
   readonly onMouseEnter?: (event: React.MouseEvent<HTMLButtonElement>) => void
-
-  /**
-   * A function that's called when a key event is received from the
-   * ToolbarButton component or any of its descendants.
-   */
-  readonly onKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => void
 
   /**
    * An optional classname that will be appended to the default
@@ -100,6 +103,14 @@ export interface IToolbarButtonProps {
 
   readonly role?: string
   readonly ariaExpanded?: boolean
+  readonly ariaHaspopup?: AriaHasPopupType
+
+  /**
+   * Typically the contents of a button serve the purpose of describing the
+   * buttons use. However, ariaLabel can be used if the contents do not suffice.
+   * Such as when a button wraps an image and there is no text.
+   */
+  readonly ariaLabel?: string
 
   /**
    * Whether to only show the tooltip when the tooltip target overflows its
@@ -172,6 +183,7 @@ export class ToolbarButton extends React.Component<IToolbarButtonProps, {}> {
     const className = classNames(
       'toolbar-button',
       { 'has-progress': this.props.progressValue !== undefined },
+      { resizable: enableResizingToolbarButtons() },
       this.props.className
     )
 
@@ -189,11 +201,7 @@ export class ToolbarButton extends React.Component<IToolbarButtonProps, {}> {
       ) : undefined
 
     return (
-      <div
-        className={className}
-        onKeyDown={this.props.onKeyDown}
-        ref={this.wrapperRef}
-      >
+      <div className={className} ref={this.wrapperRef}>
         {tooltip && (
           <Tooltip
             target={this.wrapperRef}
@@ -206,12 +214,15 @@ export class ToolbarButton extends React.Component<IToolbarButtonProps, {}> {
         )}
         <Button
           onClick={this.onClick}
+          onContextMenu={this.props.onContextMenu}
           ref={this.onButtonRef}
           disabled={this.props.disabled}
           onMouseEnter={this.props.onMouseEnter}
           tabIndex={this.props.tabIndex}
           role={this.props.role}
           ariaExpanded={this.props.ariaExpanded}
+          ariaHaspopup={this.props.ariaHaspopup}
+          ariaLabel={this.props.ariaLabel}
         >
           {progress}
           {icon}

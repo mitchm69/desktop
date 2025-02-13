@@ -4,6 +4,7 @@ import { ICrashDetails, ErrorType } from '../crash/shared'
 import { registerWindowStateChangedEvents } from '../lib/window-state'
 import * as ipcMain from './ipc-main'
 import * as ipcWebContents from './ipc-webcontents'
+import { addTrustedIPCSender } from './trusted-ipc-sender'
 
 const minWidth = 600
 const minHeight = 500
@@ -40,9 +41,7 @@ export class CrashWindow {
         disableBlinkFeatures: 'Auxclick',
         nodeIntegration: true,
         spellcheck: false,
-        enableRemoteModule: true,
         contextIsolation: false,
-        worldSafeExecuteJavaScript: false,
       },
     }
 
@@ -53,6 +52,8 @@ export class CrashWindow {
     }
 
     this.window = new BrowserWindow(windowOptions)
+    addTrustedIPCSender(this.window.webContents)
+
     this.error = error
     this.errorType = errorType
   }

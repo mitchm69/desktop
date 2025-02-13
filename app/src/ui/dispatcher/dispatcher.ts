@@ -1,10 +1,12 @@
-import { Disposable, IDisposable } from 'event-kit'
+import { Disposable, DisposableLike } from 'event-kit'
 
 import {
   IAPIOrganization,
   IAPIPullRequest,
   IAPIFullRepository,
   IAPICheckSuite,
+  IAPIRepoRuleset,
+  getDotComAPIEndpoint,
 } from '../../lib/api'
 import { shell } from '../../lib/app-shell'
 import {
@@ -31,13 +33,9 @@ import {
   getCommitsBetweenCommits,
   getBranches,
   getRebaseSnapshot,
+  getRepositoryType,
 } from '../../lib/git'
 import { isGitOnPath } from '../../lib/is-git-on-path'
-import {
-  rejectOAuthRequest,
-  requestAuthenticatedUser,
-  resolveOAuthRequest,
-} from '../../lib/oauth'
 import {
   IOpenRepositoryFromURLAction,
   IUnknownAction,
@@ -50,13 +48,12 @@ import {
 import { Shell } from '../../lib/shells'
 import { ILaunchStats, StatsStore } from '../../lib/stats'
 import { AppStore } from '../../lib/stores/app-store'
-import { validatedRepositoryPath } from '../../lib/stores/helpers/validated-repository-path'
 import { RepositoryStateCache } from '../../lib/stores/repository-state-cache'
 import { getTipSha } from '../../lib/tip'
 
 import { Account } from '../../models/account'
 import { AppMenu, ExecutableMenuItem } from '../../models/app-menu'
-import { IAuthor } from '../../models/author'
+import { Author, UnknownAuthor } from '../../models/author'
 import { Branch, IAheadBehind } from '../../models/branch'
 import { BranchesTab } from '../../models/branches-tab'
 import { CloneRepositoryTab } from '../../models/clone-repository-tab'
@@ -68,7 +65,10 @@ import { FetchType } from '../../models/fetch'
 import { GitHubRepository } from '../../models/github-repository'
 import { ManualConflictResolution } from '../../models/manual-conflict-resolution'
 import { Popup, PopupType } from '../../models/popup'
-import { PullRequest } from '../../models/pull-request'
+import {
+  PullRequest,
+  PullRequestSuggestedNextAction,
+} from '../../models/pull-request'
 import {
   Repository,
   RepositoryWithGitHubRepository,
@@ -86,7 +86,7 @@ import {
 import { TipState, IValidBranch } from '../../models/tip'
 import { Banner, BannerType } from '../../models/banner'
 
-import { ApplicationTheme, ICustomTheme } from '../lib/application-theme'
+import { ApplicationTheme } from '../lib/application-theme'
 import { installCLI } from '../lib/install-cli'
 import {
   executeMenuItem,
@@ -106,7 +106,6 @@ import { resolveWithin } from '../../lib/path'
 import { CherryPickResult } from '../../lib/git/cherry-pick'
 import { sleep } from '../../lib/promise'
 import { DragElement, DragType } from '../../models/drag-drop'
-import { findDefaultUpstreamBranch } from '../../lib/branch'
 import { ILastThankYou } from '../../models/last-thank-you'
 import { dragAndDropManager } from '../../lib/drag-and-drop-manager'
 import {
@@ -116,9 +115,15 @@ import {
   MultiCommitOperationStep,
   MultiCommitOperationStepKind,
 } from '../../models/multi-commit-operation'
-import { DragAndDropIntroType } from '../history/drag-and-drop-intro'
 import { getMultiCommitOperationChooseBranchStep } from '../../lib/multi-commit-operation'
 import { ICombinedRefCheck, IRefCheck } from '../../lib/ci-checks/ci-checks'
+import { ValidNotificationPullRequestReviewState } from '../../lib/valid-notification-pull-request-review'
+import { UnreachableCommitsTab } from '../history/unreachable-commits-dialog'
+import { sendNonFatalException } from '../../lib/helpers/non-fatal-exception'
+import { SignInResult } from '../../lib/stores/sign-in-store'
+import { ICustomIntegration } from '../../lib/custom-integration'
+import { isAbsolute } from 'path'
+import { CLIAction } from '../../lib/cli-action'
 
 /**
  * An error handler function.
@@ -137,13 +142,16 @@ export type ErrorHandler = (
  */
 export class Dispatcher {
   private readonly errorHandlers = new Array<ErrorHandler>()
+  public incrementMetric: StatsStore['increment']
 
   public constructor(
     private readonly appStore: AppStore,
     private readonly repositoryStateManager: RepositoryStateCache,
     private readonly statsStore: StatsStore,
     private readonly commitStatusStore: CommitStatusStore
-  ) {}
+  ) {
+    this.incrementMetric = statsStore.increment.bind(statsStore)
+  }
 
   /** Load the initial state for the app. */
   public loadInitialState(): Promise<void> {
@@ -234,9 +242,18 @@ export class Dispatcher {
    */
   public changeCommitSelection(
     repository: Repository,
-    shas: ReadonlyArray<string>
-  ): Promise<void> {
-    return this.appStore._changeCommitSelection(repository, shas)
+    shas: ReadonlyArray<string>,
+    isContiguous: boolean
+  ): void {
+    return this.appStore._changeCommitSelection(repository, shas, isContiguous)
+  }
+
+  /** Update the shas that should be highlighted */
+  public updateShasToHighlight(
+    repository: Repository,
+    shasToHighlight: ReadonlyArray<string>
+  ) {
+    this.appStore._updateShasToHighlight(repository, shasToHighlight)
   }
 
   /**
@@ -373,6 +390,13 @@ export class Dispatcher {
    */
   public closePopup(popupType?: PopupType) {
     return this.appStore._closePopup(popupType)
+  }
+
+  /**
+   * Close the popup with given id.
+   */
+  public closePopupById(popupId: string) {
+    return this.appStore._closePopupById(popupId)
   }
 
   /** Show the foldout. This will close any current popup. */
@@ -675,6 +699,14 @@ export class Dispatcher {
     return this.appStore._checkoutBranch(repository, branch, strategy)
   }
 
+  /** Check out the given commit. */
+  public checkoutCommit(
+    repository: Repository,
+    commit: CommitOneLine
+  ): Promise<Repository> {
+    return this.appStore._checkoutCommit(repository, commit)
+  }
+
   /** Push the current branch. */
   public push(repository: Repository): Promise<void> {
     return this.appStore._push(repository)
@@ -756,11 +788,6 @@ export class Dispatcher {
     return this.appStore._pushError(error)
   }
 
-  /** Clear the given error. */
-  public clearError(error: Error): Promise<void> {
-    return this.appStore._clearError(error)
-  }
-
   /**
    * Clone a missing repository to the previous path, and update it's
    * state in the repository list if the clone completes without error.
@@ -785,6 +812,11 @@ export class Dispatcher {
       }
 
       const addedRepositories = await this.addRepositories([path])
+
+      if (addedRepositories.length < 1) {
+        return null
+      }
+
       const addedRepository = addedRepositories[0]
       await this.selectRepository(addedRepository)
 
@@ -841,9 +873,10 @@ export class Dispatcher {
   /** Discard the changes to the given files. */
   public discardChanges(
     repository: Repository,
-    files: ReadonlyArray<WorkingDirectoryFileChange>
+    files: ReadonlyArray<WorkingDirectoryFileChange>,
+    moveToTrash: boolean = true
   ): Promise<void> {
-    return this.appStore._discardChanges(repository, files)
+    return this.appStore._discardChanges(repository, files, moveToTrash)
   }
 
   /** Discard the changes from the given diff selection. */
@@ -868,35 +901,17 @@ export class Dispatcher {
     isLocalCommit: boolean,
     continueWithForcePush: boolean = false
   ) {
-    const repositoryState = this.repositoryStateManager.get(repository)
-    const { tip } = repositoryState.branchesState
-    const { askForConfirmationOnForcePush } = this.appStore.getState()
-
-    if (
-      askForConfirmationOnForcePush &&
-      !continueWithForcePush &&
-      !isLocalCommit &&
-      tip.kind === TipState.Valid
-    ) {
-      return this.showPopup({
-        type: PopupType.WarnForcePush,
-        operation: 'Amend',
-        onBegin: () => {
-          this.startAmendingRepository(repository, commit, isLocalCommit, true)
-        },
-      })
-    }
-
-    await this.changeRepositorySection(repository, RepositorySectionTab.Changes)
-
-    this.appStore._setRepositoryCommitToAmend(repository, commit)
-
-    this.statsStore.recordAmendCommitStarted()
+    this.appStore._startAmendingRepository(
+      repository,
+      commit,
+      isLocalCommit,
+      continueWithForcePush
+    )
   }
 
   /** Stop amending the most recent commit. */
   public async stopAmendingRepository(repository: Repository) {
-    this.appStore._setRepositoryCommitToAmend(repository, null)
+    this.appStore._stopAmendingRepository(repository)
   }
 
   /** Undo the given commit. */
@@ -914,7 +929,7 @@ export class Dispatcher {
     commit: Commit,
     showConfirmationDialog: boolean = true
   ): Promise<void> {
-    this.statsStore.recordResetToCommitCount()
+    this.statsStore.increment('resetToCommitCount')
     return this.appStore._resetToCommit(
       repository,
       commit,
@@ -939,10 +954,52 @@ export class Dispatcher {
   }
 
   /**
+   * Set the width of the Branch toolbar button to the given value.
+   * This affects the toolbar button and its dropdown element.
+   *
+   * @param width The value for the width of Branch button
+   */
+  public setBranchDropdownWidth(width: number): Promise<void> {
+    return this.appStore._setBranchDropdownWidth(width)
+  }
+
+  /**
+   * Reset the width of the Branch toolbar button to its default value.
+   */
+  public resetBranchDropdownWidth(): Promise<void> {
+    return this.appStore._resetBranchDropdownWidth()
+  }
+
+  /**
+   * Set the width of the Push/Push toolbar button to the given value.
+   * This affects the toolbar button and its dropdown element.
+   *
+   * @param width The value for the width of Push/Pull button
+   */
+  public setPushPullButtonWidth(width: number): Promise<void> {
+    return this.appStore._setPushPullButtonWidth(width)
+  }
+
+  /**
+   * Reset the width of the Push/Pull toolbar button to its default
+   * value.
+   */
+  public resetPushPullButtonWidth(): Promise<void> {
+    return this.appStore._resetPushPullButtonWidth()
+  }
+
+  /**
    * Set the update banner's visibility
    */
   public setUpdateBannerVisibility(isVisible: boolean) {
     return this.appStore._setUpdateBannerVisibility(isVisible)
+  }
+
+  /**
+   * Set the update show case visibility
+   */
+  public setUpdateShowCaseVisibility(isVisible: boolean) {
+    return this.appStore._setUpdateShowCaseVisibility(isVisible)
   }
 
   /**
@@ -1085,10 +1142,8 @@ export class Dispatcher {
 
   private dropCurrentBranchFromForcePushList = (repository: Repository) => {
     const currentState = this.repositoryStateManager.get(repository)
-    const {
-      forcePushBranches: rebasedBranches,
-      tip,
-    } = currentState.branchesState
+    const { forcePushBranches: rebasedBranches, tip } =
+      currentState.branchesState
 
     if (tip.kind !== TipState.Valid) {
       return
@@ -1116,10 +1171,8 @@ export class Dispatcher {
     baseBranch: Branch,
     targetBranch: Branch
   ): Promise<void> {
-    const {
-      branchesState,
-      multiCommitOperationState,
-    } = this.repositoryStateManager.get(repository)
+    const { branchesState, multiCommitOperationState } =
+      this.repositoryStateManager.get(repository)
 
     if (
       multiCommitOperationState == null ||
@@ -1179,6 +1232,31 @@ export class Dispatcher {
         baseBranch.name,
         targetBranch.name
       )
+    } else if (result === RebaseResult.AlreadyUpToDate) {
+      if (tip.kind !== TipState.Valid) {
+        log.warn(
+          `[rebase] tip after already up to date is ${tip.kind} but this should be a valid tip if the rebase completed without error`
+        )
+        return
+      }
+
+      const { operationDetail } = multiCommitOperationState
+      const { sourceBranch } = operationDetail
+
+      const ourBranch = targetBranch !== null ? targetBranch.name : ''
+      const theirBranch = sourceBranch !== null ? sourceBranch.name : ''
+
+      const banner: Banner = {
+        type: BannerType.BranchAlreadyUpToDate,
+        ourBranch,
+        theirBranch,
+      }
+
+      this.statsStore.increment('rebaseWithBranchAlreadyUpToDateCount')
+
+      this.setBanner(banner)
+      this.endMultiCommitOperation(repository)
+      await this.refreshRepository(repository)
     } else if (result === RebaseResult.CompletedWithoutError) {
       if (tip.kind !== TipState.Valid) {
         log.warn(
@@ -1187,7 +1265,7 @@ export class Dispatcher {
         return
       }
 
-      this.statsStore.recordRebaseSuccessWithoutConflicts()
+      this.statsStore.increment('rebaseSuccessWithoutConflictsCount')
       await this.completeMultiCommitOperation(repository, commits.length)
     } else if (result === RebaseResult.Error) {
       // we were unable to successfully start the rebase, and an error should
@@ -1227,6 +1305,11 @@ export class Dispatcher {
       manualResolutions
     )
 
+    // At this point, given continueRebase was invoked, we can assume that the
+    // rebase encountered some conflicts and they have been resolved. Getting
+    // now a CompletedWithoutError result means that the rebase has completed
+    // successfully and there aren't more conflicts to resolve, therefore we can
+    // track this as a successful rebase with conflicts.
     if (result === RebaseResult.CompletedWithoutError) {
       this.statsStore.recordOperationSuccessfulWithConflicts(kind)
     }
@@ -1291,8 +1374,8 @@ export class Dispatcher {
         // app-store._mergeBranch because it only records there when there are
         // no conflicts. Thus, recordSquashMergeSuccessful is done here in order
         // to capture all successful squash merges under this metric.
-        this.statsStore.recordSquashMergeSuccessful()
-        this.statsStore.recordSquashMergeSuccessfulWithConflicts()
+        this.statsStore.increment('squashMergeSuccessfulCount')
+        this.statsStore.increment('squashMergeSuccessfulWithConflictsCount')
       }
     }
   }
@@ -1327,6 +1410,18 @@ export class Dispatcher {
     pattern: string | string[]
   ): Promise<void> {
     return this.appStore._appendIgnoreRule(repository, pattern)
+  }
+
+  /**
+   * Convenience method to add the given file path(s) to the repository's gitignore.
+   *
+   * The file path will be escaped before adding.
+   */
+  public appendIgnoreFile(
+    repository: Repository,
+    filePath: string | string[]
+  ): Promise<void> {
+    return this.appStore._appendIgnoreFile(repository, filePath)
   }
 
   /** Opens a Git-enabled terminal setting the working directory to the repository path */
@@ -1370,24 +1465,23 @@ export class Dispatcher {
     return this.appStore.setStatsOptOut(optOut, userViewedPrompt)
   }
 
+  public setUseExternalCredentialHelper(useExternalCredentialHelper: boolean) {
+    return this.appStore._setUseExternalCredentialHelper(
+      useExternalCredentialHelper
+    )
+  }
+
+  /** Moves the app to the /Applications folder on macOS. */
   public moveToApplicationsFolder() {
-    moveToApplicationsFolder()
+    return moveToApplicationsFolder()
   }
 
   /**
    * Clear any in-flight sign in state and return to the
    * initial (no sign-in) state.
    */
-  public resetSignInState(): Promise<void> {
+  public resetSignInState() {
     return this.appStore._resetSignInState()
-  }
-
-  /**
-   * Initiate a sign in flow for github.com. This will put the store
-   * in the Authentication step ready to receive user credentials.
-   */
-  public beginDotComSignIn(): Promise<void> {
-    return this.appStore._beginDotComSignIn()
   }
 
   /**
@@ -1395,8 +1489,10 @@ export class Dispatcher {
    * put the store in the EndpointEntry step ready to receive the url
    * to the enterprise instance.
    */
-  public beginEnterpriseSignIn(): Promise<void> {
-    return this.appStore._beginEnterpriseSignIn()
+  public beginEnterpriseSignIn(
+    resultCallback?: (result: SignInResult) => void
+  ) {
+    this.appStore._beginEnterpriseSignIn(resultCallback)
   }
 
   /**
@@ -1416,23 +1512,27 @@ export class Dispatcher {
     return this.appStore._setSignInEndpoint(url)
   }
 
-  /**
-   * Attempt to advance from the authentication step using a username
-   * and password. This method must only be called when the store is
-   * in the authentication step or an error will be thrown. If the
-   * provided credentials are valid the store will either advance to
-   * the Success step or to the TwoFactorAuthentication step if the
-   * user has enabled two factor authentication.
-   *
-   * If an error occurs during sign in (such as invalid credentials)
-   * the authentication state will be updated with that error so that
-   * the responsible component can present it to the user.
-   */
-  public setSignInCredentials(
-    username: string,
-    password: string
-  ): Promise<void> {
-    return this.appStore._setSignInCredentials(username, password)
+  public beginDotComSignIn(resultCallback: (result: SignInResult) => void) {
+    this.appStore._beginDotComSignIn(resultCallback)
+  }
+
+  public beginBrowserBasedSignIn(
+    endpoint: string,
+    resultCallback?: (result: SignInResult) => void
+  ) {
+    if (
+      endpoint === getDotComAPIEndpoint() ||
+      new URL(endpoint).hostname === 'github.com'
+    ) {
+      this.appStore._beginDotComSignIn(resultCallback)
+      this.requestBrowserAuthentication()
+    } else {
+      this.appStore._beginEnterpriseSignIn(resultCallback)
+      this.appStore
+        ._setSignInEndpoint(endpoint)
+        .then(() => this.requestBrowserAuthentication())
+        .catch(e => log.error(`Error setting sign in endpoint`, e))
+    }
   }
 
   /**
@@ -1446,8 +1546,8 @@ export class Dispatcher {
    * protocol handler to execute or by providing the wrong credentials
    * this promise will never complete.
    */
-  public requestBrowserAuthentication(): Promise<void> {
-    return this.appStore._requestBrowserAuthentication()
+  public requestBrowserAuthentication() {
+    this.appStore._requestBrowserAuthentication()
   }
 
   /**
@@ -1459,34 +1559,22 @@ export class Dispatcher {
    * protocol handler to execute or by providing the wrong credentials
    * this promise will never complete.
    */
-  public async requestBrowserAuthenticationToDotcom(): Promise<void> {
-    await this.beginDotComSignIn()
-    return this.requestBrowserAuthentication()
-  }
-
-  /**
-   * Attempt to complete the sign in flow with the given OTP token.\
-   * This method must only be called when the store is in the
-   * TwoFactorAuthentication step or an error will be thrown.
-   *
-   * If the provided token is valid the store will advance to
-   * the Success step.
-   *
-   * If an error occurs during sign in (such as invalid credentials)
-   * the authentication state will be updated with that error so that
-   * the responsible component can present it to the user.
-   */
-  public setSignInOTP(otp: string): Promise<void> {
-    return this.appStore._setSignInOTP(otp)
+  public requestBrowserAuthenticationToDotcom(
+    resultCallback?: (result: SignInResult) => void
+  ) {
+    this.appStore._beginDotComSignIn(resultCallback)
+    this.requestBrowserAuthentication()
   }
 
   /**
    * Launch a sign in dialog for authenticating a user with
    * GitHub.com.
    */
-  public async showDotComSignInDialog(): Promise<void> {
-    await this.appStore._beginDotComSignIn()
-    await this.appStore._showPopup({ type: PopupType.SignIn })
+  public async showDotComSignInDialog(
+    resultCallback?: (result: SignInResult) => void
+  ): Promise<void> {
+    this.appStore._beginDotComSignIn(resultCallback)
+    this.appStore._showPopup({ type: PopupType.SignIn })
   }
 
   /**
@@ -1494,14 +1582,17 @@ export class Dispatcher {
    * a GitHub Enterprise instance.
    * Optionally, you can provide an endpoint URL.
    */
-  public async showEnterpriseSignInDialog(endpoint?: string): Promise<void> {
-    await this.appStore._beginEnterpriseSignIn()
+  public async showEnterpriseSignInDialog(
+    endpoint?: string,
+    resultCallback?: (result: SignInResult) => void
+  ): Promise<void> {
+    this.appStore._beginEnterpriseSignIn(resultCallback)
 
     if (endpoint !== undefined) {
-      await this.appStore._setSignInEndpoint(endpoint)
+      this.appStore._setSignInEndpoint(endpoint)
     }
 
-    await this.appStore._showPopup({ type: PopupType.SignIn })
+    this.appStore._showPopup({ type: PopupType.SignIn })
   }
 
   /**
@@ -1512,6 +1603,17 @@ export class Dispatcher {
     repository: RepositoryWithGitHubRepository
   ): Promise<void> {
     await this.appStore._showCreateForkDialog(repository)
+  }
+
+  public async showUnknownAuthorsCommitWarning(
+    authors: ReadonlyArray<UnknownAuthor>,
+    onCommitAnyway: () => void
+  ) {
+    return this.appStore._showPopup({
+      type: PopupType.UnknownAuthors,
+      authors,
+      onCommit: onCommitAnyway,
+    })
   }
 
   /**
@@ -1668,6 +1770,11 @@ export class Dispatcher {
     }
 
     if (filepath !== null) {
+      if (isAbsolute(filepath)) {
+        log.error(`Refusing to open absolute path: ${filepath}`)
+        return
+      }
+
       const resolved = await resolveWithin(repository.path, filepath)
 
       if (resolved !== null) {
@@ -1714,9 +1821,8 @@ export class Dispatcher {
     }
 
     // Find the repository where the PR is created in Desktop.
-    let repository: Repository | null = this.getRepositoryFromPullRequest(
-      pullRequest
-    )
+    let repository: Repository | null =
+      this.getRepositoryFromPullRequest(pullRequest)
 
     if (repository !== null) {
       await this.selectRepository(repository)
@@ -1756,20 +1862,43 @@ export class Dispatcher {
     return repository
   }
 
+  public async dispatchCLIAction(action: CLIAction) {
+    if (action.kind === 'clone-url') {
+      const { branch, url } = action
+
+      if (branch) {
+        await this.openBranchNameFromUrl(url, branch)
+      } else {
+        await this.openOrCloneRepository(url)
+      }
+    } else if (action.kind === 'open-repository') {
+      // user may accidentally provide a folder within the repository
+      // this ensures we use the repository root, if it is actually a repository
+      // otherwise we consider it an untracked repository
+      const path = await getRepositoryType(action.path)
+        .then(t =>
+          t.kind === 'regular' ? t.topLevelWorkingDirectory : action.path
+        )
+        .catch(e => {
+          log.error('Could not determine repository type', e)
+          return action.path
+        })
+
+      const { repositories } = this.appStore.getState()
+      const existingRepository = matchExistingRepository(repositories, path)
+
+      if (existingRepository) {
+        await this.selectRepository(existingRepository)
+      } else {
+        await this.showPopup({ type: PopupType.AddRepository, path })
+      }
+    }
+  }
+
   public async dispatchURLAction(action: URLActionType): Promise<void> {
     switch (action.name) {
       case 'oauth':
-        try {
-          log.info(`[Dispatcher] requesting authenticated user`)
-          const user = await requestAuthenticatedUser(action.code, action.state)
-          if (user) {
-            resolveOAuthRequest(user)
-          } else if (user === null) {
-            rejectOAuthRequest(new Error('Unable to fetch authenticated user.'))
-          }
-        } catch (e) {
-          rejectOAuthRequest(e)
-        }
+        await this.appStore._resolveOAuthRequest(action)
 
         if (__DARWIN__) {
           // workaround for user reports that the application doesn't receive focus
@@ -1786,22 +1915,6 @@ export class Dispatcher {
 
       case 'open-repository-from-url':
         this.openRepositoryFromUrl(action)
-        break
-
-      case 'open-repository-from-path':
-        // user may accidentally provide a folder within the repository
-        // this ensures we use the repository root, if it is actually a repository
-        // otherwise we consider it an untracked repository
-        const path = (await validatedRepositoryPath(action.path)) || action.path
-        const { repositories } = this.appStore.getState()
-        const existingRepository = matchExistingRepository(repositories, path)
-
-        if (existingRepository) {
-          await this.selectRepository(existingRepository)
-          this.statsStore.recordAddExistingRepository()
-        } else {
-          await this.showPopup({ type: PopupType.AddRepository, path })
-        }
         break
 
       default:
@@ -1835,6 +1948,16 @@ export class Dispatcher {
    */
   public setConfirmDiscardChangesSetting(value: boolean): Promise<void> {
     return this.appStore._setConfirmDiscardChangesSetting(value)
+  }
+
+  /**
+   * Sets the user's preference so that confirmation to retry discard changes
+   * after failure is not asked
+   */
+  public setConfirmDiscardChangesPermanentlySetting(
+    value: boolean
+  ): Promise<void> {
+    return this.appStore._setConfirmDiscardChangesPermanentlySetting(value)
   }
 
   /**
@@ -1907,12 +2030,29 @@ export class Dispatcher {
     })
   }
 
+  public async openOrAddRepository(path: string): Promise<Repository | null> {
+    const state = this.appStore.getState()
+    const repositories = state.repositories
+    const existingRepository = repositories.find(r => r.path === path)
+
+    if (existingRepository) {
+      return await this.selectRepository(existingRepository)
+    }
+
+    return this.appStore._startOpenInDesktop(() => {
+      this.showPopup({
+        type: PopupType.AddRepository,
+        path,
+      })
+    })
+  }
+
   /**
    * Install the CLI tool.
    *
    * This is used only on macOS.
    */
-  public async installCLI() {
+  public async installDarwinCLI() {
     try {
       await installCLI()
 
@@ -1922,14 +2062,6 @@ export class Dispatcher {
 
       this.postError(e)
     }
-  }
-
-  /** Prompt the user to authenticate for a generic git server. */
-  public promptForGenericGitAuthentication(
-    repository: Repository | CloningRepository,
-    retry: RetryAction
-  ): Promise<void> {
-    return this.appStore.promptForGenericGitAuthentication(repository, retry)
   }
 
   /** Save the generic git credentials. */
@@ -2017,6 +2149,12 @@ export class Dispatcher {
           retryAction.beforeCommit,
           retryAction.lastRetainedCommitRef
         )
+      case RetryActionType.DiscardChanges:
+        return this.discardChanges(
+          retryAction.repository,
+          retryAction.files,
+          false
+        )
       default:
         return assertNever(retryAction, `Unknown retry action: ${retryAction}`)
     }
@@ -2045,6 +2183,19 @@ export class Dispatcher {
     file: CommittedFileChange | null = null
   ): Promise<void> {
     return this.appStore._setHideWhitespaceInHistoryDiff(
+      hideWhitespaceInDiff,
+      repository,
+      file
+    )
+  }
+
+  /** Change the hide whitespace in pull request diff setting */
+  public onHideWhitespaceInPullRequestDiffChanged(
+    hideWhitespaceInDiff: boolean,
+    repository: Repository,
+    file: CommittedFileChange | null = null
+  ) {
+    this.appStore._setHideWhitespaceInPullRequestDiff(
       hideWhitespaceInDiff,
       repository,
       file
@@ -2104,8 +2255,11 @@ export class Dispatcher {
    * openCreatePullRequestInBrowser method which immediately opens the
    * create pull request page without showing a dialog.
    */
-  public createPullRequest(repository: Repository): Promise<void> {
-    return this.appStore._createPullRequest(repository)
+  public createPullRequest(
+    repository: Repository,
+    baseBranch?: Branch
+  ): Promise<void> {
+    return this.appStore._createPullRequest(repository, baseBranch)
   }
 
   /**
@@ -2185,7 +2339,7 @@ export class Dispatcher {
    */
   public setCoAuthors(
     repository: Repository,
-    coAuthors: ReadonlyArray<IAuthor>
+    coAuthors: ReadonlyArray<Author>
   ) {
     return this.appStore._setCoAuthors(repository, coAuthors)
   }
@@ -2267,8 +2421,24 @@ export class Dispatcher {
     await this.appStore._loadStatus(repository)
   }
 
+  public setConfirmDiscardStashSetting(value: boolean) {
+    return this.appStore._setConfirmDiscardStashSetting(value)
+  }
+
+  public setConfirmCheckoutCommitSetting(value: boolean) {
+    return this.appStore._setConfirmCheckoutCommitSetting(value)
+  }
+
   public setConfirmForcePushSetting(value: boolean) {
     return this.appStore._setConfirmForcePushSetting(value)
+  }
+
+  public setConfirmUndoCommitSetting(value: boolean) {
+    return this.appStore._setConfirmUndoCommitSetting(value)
+  }
+
+  public setConfirmCommitFilteredChanges(value: boolean) {
+    return this.appStore._setConfirmCommitFilteredChanges(value)
   }
 
   /**
@@ -2283,47 +2453,10 @@ export class Dispatcher {
   }
 
   /**
-   * Updates the application state to indicate a conflict is in-progress
-   * as a result of a pull and increments the relevant metric.
-   */
-  public mergeConflictDetectedFromPull() {
-    return this.statsStore.recordMergeConflictFromPull()
-  }
-
-  /**
-   * Updates the application state to indicate a conflict is in-progress
-   * as a result of a merge and increments the relevant metric.
-   */
-  public mergeConflictDetectedFromExplicitMerge() {
-    return this.statsStore.recordMergeConflictFromExplicitMerge()
-  }
-
-  /**
    * Increments the `mergeIntoCurrentBranchMenuCount` metric
    */
   public recordMenuInitiatedMerge(isSquash: boolean = true) {
     return this.statsStore.recordMenuInitiatedMerge(isSquash)
-  }
-
-  /**
-   * Increments the `rebaseIntoCurrentBranchMenuCount` metric
-   */
-  public recordMenuInitiatedRebase() {
-    return this.statsStore.recordMenuInitiatedRebase()
-  }
-
-  /**
-   * Increments the `updateFromDefaultBranchMenuCount` metric
-   */
-  public recordMenuInitiatedUpdate() {
-    return this.statsStore.recordMenuInitiatedUpdate()
-  }
-
-  /**
-   * Increments the `mergesInitiatedFromComparison` metric
-   */
-  public recordCompareInitiatedMerge() {
-    return this.statsStore.recordCompareInitiatedMerge()
   }
 
   /**
@@ -2334,10 +2467,10 @@ export class Dispatcher {
   }
 
   /**
-   * Set the custom application-wide theme
+   * Set the application-wide tab size
    */
-  public setCustomTheme(theme: ICustomTheme) {
-    return this.appStore._setCustomTheme(theme)
+  public setSelectedTabSize(tabSize: number) {
+    return this.appStore._setSelectedTabSize(tabSize)
   }
 
   /**
@@ -2346,13 +2479,6 @@ export class Dispatcher {
    */
   public recordRepoClicked(repoHasIndicator: boolean) {
     return this.statsStore.recordRepoClicked(repoHasIndicator)
-  }
-
-  /**
-   * Increments the `createPullRequestCount` metric
-   */
-  public recordCreatePullRequest() {
-    return this.statsStore.recordCreatePullRequest()
   }
 
   public recordWelcomeWizardInitiated() {
@@ -2367,61 +2493,7 @@ export class Dispatcher {
     this.statsStore.recordAddExistingRepository()
   }
 
-  /**
-   * Increments the `mergeConflictsDialogDismissalCount` metric
-   */
-  public recordMergeConflictsDialogDismissal() {
-    this.statsStore.recordMergeConflictsDialogDismissal()
-  }
-
-  /**
-   * Increments the `mergeConflictsDialogReopenedCount` metric
-   */
-  public recordMergeConflictsDialogReopened() {
-    this.statsStore.recordMergeConflictsDialogReopened()
-  }
-
-  /**
-   * Increments the `anyConflictsLeftOnMergeConflictsDialogDismissalCount` metric
-   */
-  public recordAnyConflictsLeftOnMergeConflictsDialogDismissal() {
-    this.statsStore.recordAnyConflictsLeftOnMergeConflictsDialogDismissal()
-  }
-
-  /**
-   * Increments the `guidedConflictedMergeCompletionCount` metric
-   */
-  public recordGuidedConflictedMergeCompletion() {
-    this.statsStore.recordGuidedConflictedMergeCompletion()
-  }
-
-  /**
-   * Increments the `unguidedConflictedMergeCompletionCount` metric
-   */
-  public recordUnguidedConflictedMergeCompletion() {
-    this.statsStore.recordUnguidedConflictedMergeCompletion()
-  }
-
   // TODO: more rebase-related actions
-
-  /**
-   * Increments the `rebaseConflictsDialogDismissalCount` metric
-   */
-  public recordRebaseConflictsDialogDismissal() {
-    this.statsStore.recordRebaseConflictsDialogDismissal()
-  }
-
-  /**
-   * Increments the `rebaseConflictsDialogReopenedCount` metric
-   */
-  public recordRebaseConflictsDialogReopened() {
-    this.statsStore.recordRebaseConflictsDialogReopened()
-  }
-
-  /** Increments the `errorWhenSwitchingBranchesWithUncommmittedChanges` metric */
-  public recordErrorWhenSwitchingBranchesWithUncommmittedChanges() {
-    return this.statsStore.recordErrorWhenSwitchingBranchesWithUncommmittedChanges()
-  }
 
   /**
    * Refresh the list of open pull requests for the given repository.
@@ -2461,7 +2533,7 @@ export class Dispatcher {
     ref: string,
     callback: StatusCallBack,
     branchName?: string
-  ): IDisposable {
+  ): DisposableLike {
     return this.commitStatusStore.subscribe(
       repository,
       ref,
@@ -2491,19 +2563,39 @@ export class Dispatcher {
    */
   public async rerequestCheckSuites(
     repository: GitHubRepository,
-    checkRuns: ReadonlyArray<IRefCheck>
+    checkRuns: ReadonlyArray<IRefCheck>,
+    failedOnly: boolean
   ): Promise<ReadonlyArray<boolean>> {
-    // Get unique set of check suite ids
-    const checkSuiteIds = new Set<number | null>([
-      ...checkRuns.map(cr => cr.checkSuiteId),
-    ])
-
     const promises = new Array<Promise<boolean>>()
 
-    for (const id of checkSuiteIds) {
-      if (id === null) {
+    // If it is one and in actions check, we can rerun it individually.
+    if (checkRuns.length === 1 && checkRuns[0].actionsWorkflow !== undefined) {
+      promises.push(
+        this.commitStatusStore.rerunJob(repository, checkRuns[0].id)
+      )
+      return Promise.all(promises)
+    }
+
+    const checkSuiteIds = new Set<number>()
+    const workflowRunIds = new Set<number>()
+    for (const cr of checkRuns) {
+      if (failedOnly && cr.actionsWorkflow !== undefined) {
+        workflowRunIds.add(cr.actionsWorkflow.id)
         continue
       }
+
+      // There could still be failed ones that are not action and only way to
+      // rerun them is to rerun their whole check suite
+      if (cr.checkSuiteId !== null) {
+        checkSuiteIds.add(cr.checkSuiteId)
+      }
+    }
+
+    for (const id of workflowRunIds) {
+      promises.push(this.commitStatusStore.rerunFailedJobs(repository, id))
+    }
+
+    for (const id of checkSuiteIds) {
       promises.push(this.commitStatusStore.rerequestCheckSuite(repository, id))
     }
 
@@ -2569,72 +2661,6 @@ export class Dispatcher {
     return this.appStore._hideStashedChanges(repository)
   }
 
-  /**
-   * Increment the number of times the user has opened their external editor
-   * from the suggested next steps view
-   */
-  public recordSuggestedStepOpenInExternalEditor(): Promise<void> {
-    return this.statsStore.recordSuggestedStepOpenInExternalEditor()
-  }
-
-  /**
-   * Increment the number of times the user has opened their repository in
-   * Finder/Explorer from the suggested next steps view
-   */
-  public recordSuggestedStepOpenWorkingDirectory(): Promise<void> {
-    return this.statsStore.recordSuggestedStepOpenWorkingDirectory()
-  }
-
-  /**
-   * Increment the number of times the user has opened their repository on
-   * GitHub from the suggested next steps view
-   */
-  public recordSuggestedStepViewOnGitHub(): Promise<void> {
-    return this.statsStore.recordSuggestedStepViewOnGitHub()
-  }
-
-  /**
-   * Increment the number of times the user has used the publish repository
-   * action from the suggested next steps view
-   */
-  public recordSuggestedStepPublishRepository(): Promise<void> {
-    return this.statsStore.recordSuggestedStepPublishRepository()
-  }
-
-  /**
-   * Increment the number of times the user has used the publish branch
-   * action branch from the suggested next steps view
-   */
-  public recordSuggestedStepPublishBranch(): Promise<void> {
-    return this.statsStore.recordSuggestedStepPublishBranch()
-  }
-
-  /**
-   * Increment the number of times the user has used the Create PR suggestion
-   * in the suggested next steps view.
-   */
-  public recordSuggestedStepCreatePullRequest(): Promise<void> {
-    return this.statsStore.recordSuggestedStepCreatePullRequest()
-  }
-
-  /**
-   * Increment the number of times the user has used the View Stash suggestion
-   * in the suggested next steps view.
-   */
-  public recordSuggestedStepViewStash(): Promise<void> {
-    return this.statsStore.recordSuggestedStepViewStash()
-  }
-
-  /** Record when the user takes no action on the stash entry */
-  public recordNoActionTakenOnStash(): Promise<void> {
-    return this.statsStore.recordNoActionTakenOnStash()
-  }
-
-  /** Record when the user views the stash entry */
-  public recordStashView(): Promise<void> {
-    return this.statsStore.recordStashView()
-  }
-
   /** Call when the user opts to skip the pick editor step of the onboarding tutorial */
   public skipPickEditorTutorialStep(repository: Repository) {
     return this.appStore._skipPickEditorTutorialStep(repository)
@@ -2648,13 +2674,8 @@ export class Dispatcher {
     return this.appStore._markPullRequestTutorialStepAsComplete(repository)
   }
 
-  /**
-   * Increments the `forksCreated ` metric` indicating that the user has
-   * elected to create a fork when presented with a dialog informing
-   * them that they don't have write access to the current repository.
-   */
-  public recordForkCreated() {
-    return this.statsStore.recordForkCreated()
+  public markTutorialCompletionAsAnnounced(repository: Repository) {
+    return this.appStore._markTutorialCompletionAsAnnounced(repository)
   }
 
   /**
@@ -2675,7 +2696,7 @@ export class Dispatcher {
     // See https://github.com/desktop/desktop/issues/9232 for rationale
     const url = getGitHubHtmlUrl(repository)
     if (url !== null) {
-      this.statsStore.recordIssueCreationWebpageOpened()
+      this.statsStore.increment('issueCreationWebpageOpenedCount')
       return this.appStore._openInBrowser(`${url}/issues/new/choose`)
     } else {
       return false
@@ -2694,12 +2715,12 @@ export class Dispatcher {
     this.appStore._setUseWindowsOpenSSH(useWindowsOpenSSH)
   }
 
-  public setNotificationsEnabled(notificationsEnabled: boolean) {
-    this.appStore._setNotificationsEnabled(notificationsEnabled)
+  public setShowCommitLengthWarning(showCommitLengthWarning: boolean) {
+    this.appStore._setShowCommitLengthWarning(showCommitLengthWarning)
   }
 
-  public recordDiffOptionsViewed() {
-    return this.statsStore.recordDiffOptionsViewed()
+  public setNotificationsEnabled(notificationsEnabled: boolean) {
+    this.appStore._setNotificationsEnabled(notificationsEnabled)
   }
 
   private logHowToRevertCherryPick(
@@ -2762,7 +2783,6 @@ export class Dispatcher {
 
     this.appStore._initializeCherryPickProgress(repository, commits)
     this.switchMultiCommitOperationToShowProgress(repository)
-    this.markDragAndDropIntroAsSeen(DragAndDropIntroType.CherryPick)
 
     const retry: RetryAction = {
       type: RetryActionType.CherryPick,
@@ -2787,7 +2807,7 @@ export class Dispatcher {
     )
 
     if (commits.length > 1) {
-      this.statsStore.recordCherryPickMultipleCommits()
+      this.statsStore.increment('cherryPickMultipleCommitsCount')
     }
 
     const nameAfterCheckout = await this.appStore._checkoutBranchReturnName(
@@ -2865,7 +2885,7 @@ export class Dispatcher {
     )
     this.appStore._setMultiCommitOperationTargetBranch(repository, targetBranch)
     this.appStore._setCherryPickBranchCreated(repository, true)
-    this.statsStore.recordCherryPickBranchCreatedCount()
+    this.statsStore.increment('cherryPickBranchCreatedCount')
     return this.cherryPick(repository, targetBranch, commits, sourceBranch)
   }
 
@@ -2920,7 +2940,7 @@ export class Dispatcher {
       repository,
     })
 
-    this.statsStore.recordCherryPickViaDragAndDrop()
+    this.statsStore.increment('cherryPickViaDragAndDropCount')
     this.setCherryPickBranchCreated(repository, false)
     this.cherryPick(repository, targetBranch, commits, sourceBranch)
   }
@@ -2981,7 +3001,7 @@ export class Dispatcher {
     )
 
     if (result === CherryPickResult.CompletedWithoutError) {
-      this.statsStore.recordCherryPickSuccessfulWithConflicts()
+      this.statsStore.increment('cherryPickSuccessfulWithConflictsCount')
     }
 
     this.processCherryPickResult(
@@ -2998,10 +3018,8 @@ export class Dispatcher {
    * show conflicts step
    */
   private startConflictCherryPickFlow(repository: Repository): void {
-    const {
-      changesState,
-      multiCommitOperationState,
-    } = this.repositoryStateManager.get(repository)
+    const { changesState, multiCommitOperationState } =
+      this.repositoryStateManager.get(repository)
     const { conflictState } = changesState
 
     if (
@@ -3030,7 +3048,7 @@ export class Dispatcher {
       },
     })
 
-    this.statsStore.recordCherryPickConflictsEncountered()
+    this.statsStore.increment('cherryPickConflictsEncounteredCount')
   }
 
   /** Aborts an ongoing cherry pick and switches back to the source branch. */
@@ -3077,7 +3095,7 @@ export class Dispatcher {
 
     switch (cherryPickResult) {
       case CherryPickResult.CompletedWithoutError:
-        await this.changeCommitSelection(repository, [commits[0].sha])
+        await this.changeCommitSelection(repository, [commits[0].sha], true)
         await this.completeMultiCommitOperation(repository, commits.length)
         break
       case CherryPickResult.ConflictsEncountered:
@@ -3108,21 +3126,6 @@ export class Dispatcher {
     return this.appStore._setCherryPickProgressFromState(repository)
   }
 
-  /** Method to mark a drag & drop intro as seen */
-  public markDragAndDropIntroAsSeen(intro: DragAndDropIntroType): void {
-    this.appStore._markDragAndDropIntroAsSeen(intro)
-  }
-
-  /** Method to record cherry pick initiated via the context menu. */
-  public recordCherryPickViaContextMenu() {
-    this.statsStore.recordCherryPickViaContextMenu()
-  }
-
-  /** Method to record an operation started via drag and drop and canceled. */
-  public recordDragStartedAndCanceled() {
-    this.statsStore.recordDragStartedAndCanceled()
-  }
-
   /** Method to set the drag element */
   public setDragElement(dragElement: DragElement): void {
     this.appStore._setDragElement(dragElement)
@@ -3141,7 +3144,8 @@ export class Dispatcher {
     sourceBranch: Branch | null
   ): Promise<void> {
     const { branchesState } = this.repositoryStateManager.get(repository)
-    const { defaultBranch, allBranches, tip } = branchesState
+    const { defaultBranch, upstreamDefaultBranch, allBranches, tip } =
+      branchesState
 
     if (tip.kind !== TipState.Valid) {
       this.appStore._clearCherryPickingHead(repository, null)
@@ -3153,12 +3157,6 @@ export class Dispatcher {
     const isGHRepo = isRepositoryWithGitHubRepository(repository)
     const upstreamGhRepo = isGHRepo
       ? getNonForkGitHubRepository(repository as RepositoryWithGitHubRepository)
-      : null
-    const upstreamDefaultBranch = isGHRepo
-      ? findDefaultUpstreamBranch(
-          repository as RepositoryWithGitHubRepository,
-          allBranches
-        )
       : null
 
     this.initializeMultiCommitOperation(
@@ -3187,6 +3185,19 @@ export class Dispatcher {
     return this.appStore._setMultiCommitOperationStep(repository, step)
   }
 
+  /** Set the multi commit operation target branch */
+  public setMultiCommitOperationTargetBranch(
+    repository: Repository,
+    targetBranch: Branch
+  ): void {
+    this.repositoryStateManager.updateMultiCommitOperationState(
+      repository,
+      () => ({
+        targetBranch,
+      })
+    )
+  }
+
   /** Set cherry-pick branch created state */
   public setCherryPickBranchCreated(
     repository: Repository,
@@ -3208,6 +3219,26 @@ export class Dispatcher {
     this.appStore._setLastThankYou(lastThankYou)
   }
 
+  /** Set whether or not the user wants to use a custom external editor */
+  public setUseCustomEditor(useCustomEditor: boolean) {
+    this.appStore._setUseCustomEditor(useCustomEditor)
+  }
+
+  /** Set the custom external editor info */
+  public setCustomEditor(customEditor: ICustomIntegration) {
+    this.appStore._setCustomEditor(customEditor)
+  }
+
+  /** Set whether or not the user wants to use a custom shell */
+  public setUseCustomShell(useCustomShell: boolean) {
+    this.appStore._setUseCustomShell(useCustomShell)
+  }
+
+  /** Set the custom shell info */
+  public setCustomShell(customShell: ICustomIntegration) {
+    this.appStore._setCustomShell(customShell)
+  }
+
   public async reorderCommits(
     repository: Repository,
     commitsToReorder: ReadonlyArray<Commit>,
@@ -3227,8 +3258,6 @@ export class Dispatcher {
       return
     }
 
-    this.markDragAndDropIntroAsSeen(DragAndDropIntroType.Reorder)
-
     const stateBefore = this.repositoryStateManager.get(repository)
     const { tip } = stateBefore.branchesState
 
@@ -3237,10 +3266,10 @@ export class Dispatcher {
       return
     }
 
-    this.statsStore.recordReorderStarted()
+    this.statsStore.increment('reorderStartedCount')
 
     if (commitsToReorder.length > 1) {
-      this.statsStore.recordReorderMultipleCommits()
+      this.statsStore.increment('reorderMultipleCommitsCount')
     }
 
     this.appStore._initializeMultiCommitOperation(
@@ -3337,8 +3366,6 @@ export class Dispatcher {
       return
     }
 
-    this.markDragAndDropIntroAsSeen(DragAndDropIntroType.Squash)
-
     const stateBefore = this.repositoryStateManager.get(repository)
     const { tip } = stateBefore.branchesState
 
@@ -3348,7 +3375,7 @@ export class Dispatcher {
     }
 
     if (toSquash.length > 1) {
-      this.statsStore.recordSquashMultipleCommitsInvoked()
+      this.statsStore.increment('squashMultipleCommitsInvokedCount')
     }
 
     this.initializeMultiCommitOperation(
@@ -3366,6 +3393,7 @@ export class Dispatcher {
       tip.branch.tip.sha
     )
 
+    this.closePopup(PopupType.CommitMessage)
     this.showPopup({
       type: PopupType.MultiCommitOperation,
       repository,
@@ -3471,13 +3499,25 @@ export class Dispatcher {
     // conflict flow if squash results in conflict.
     const status = await this.appStore._loadStatus(repository)
     switch (result) {
+      case RebaseResult.AlreadyUpToDate:
+        sendNonFatalException(
+          'rebaseConflictsWithBranchAlreadyUpToDate',
+          new Error(
+            `processMultiCommitOperationRebaseResult was invoked (which means Desktop went into a conflicts-found state) but the branch was already up-to-date, so there couldn't be any conflicts at all`
+          )
+        )
+        break
       case RebaseResult.CompletedWithoutError:
         if (status !== null && status.currentTip !== undefined) {
           // This sets the history to the current tip
           // TODO: Look at history back to last retained commit and search for
           // squashed commit based on new commit message ... if there is more
           // than one, just take the most recent. (not likely?)
-          await this.changeCommitSelection(repository, [status.currentTip])
+          await this.changeCommitSelection(
+            repository,
+            [status.currentTip],
+            true
+          )
         }
 
         await this.completeMultiCommitOperation(
@@ -3621,10 +3661,7 @@ export class Dispatcher {
         }
         break
       case MultiCommitOperationKind.Rebase:
-        const sourceBranch =
-          operationDetail.kind === MultiCommitOperationKind.Rebase
-            ? operationDetail.sourceBranch
-            : null
+        const { sourceBranch } = operationDetail
         banner = {
           type: BannerType.SuccessfulRebase,
           targetBranch: targetBranch !== null ? targetBranch.name : '',
@@ -3700,10 +3737,8 @@ export class Dispatcher {
       type: BannerType.ConflictsFound,
       operationDescription,
       onOpenConflictsDialog: async () => {
-        const {
-          changesState,
-          multiCommitOperationState,
-        } = this.repositoryStateManager.get(repository)
+        const { changesState, multiCommitOperationState } =
+          this.repositoryStateManager.get(repository)
         const { conflictState } = changesState
 
         if (conflictState == null) {
@@ -3779,9 +3814,9 @@ export class Dispatcher {
   /** Records the squash that a squash has been invoked by either drag and drop or context menu */
   public recordSquashInvoked(isInvokedByContextMenu: boolean): void {
     if (isInvokedByContextMenu) {
-      this.statsStore.recordSquashViaContextMenuInvoked()
+      this.statsStore.increment('squashViaContextMenuInvokedCount')
     } else {
-      this.statsStore.recordSquashViaDragAndDropInvokedCount()
+      this.statsStore.increment('squashViaDragAndDropInvokedCount')
     }
   }
 
@@ -3820,7 +3855,7 @@ export class Dispatcher {
   public setShowCIStatusPopover(showCIStatusPopover: boolean) {
     this.appStore._setShowCIStatusPopover(showCIStatusPopover)
     if (showCIStatusPopover) {
-      this.statsStore.recordCheckRunsPopoverOpened()
+      this.statsStore.increment('opensCheckRunsPopover')
     }
   }
 
@@ -3828,15 +3863,118 @@ export class Dispatcher {
     this.appStore._toggleCIStatusPopover()
   }
 
-  public recordCheckViewedOnline() {
-    this.statsStore.recordCheckViewedOnline()
+  public recordPullRequestReviewDialogSwitchToPullRequest(
+    reviewType: ValidNotificationPullRequestReviewState
+  ) {
+    this.statsStore.recordPullRequestReviewDialogSwitchToPullRequest(reviewType)
   }
 
-  public recordCheckJobStepViewedOnline() {
-    this.statsStore.recordCheckJobStepViewedOnline()
+  public showUnreachableCommits(selectedTab: UnreachableCommitsTab) {
+    this.statsStore.increment(
+      'multiCommitDiffUnreachableCommitsDialogOpenedCount'
+    )
+
+    this.showPopup({
+      type: PopupType.UnreachableCommits,
+      selectedTab,
+    })
   }
 
-  public recordRerunChecks() {
-    this.statsStore.recordRerunChecks()
+  public startPullRequest(repository: Repository) {
+    this.appStore._startPullRequest(repository)
+  }
+
+  /**
+   * Change the selected changed file of the current pull request state.
+   */
+  public changePullRequestFileSelection(
+    repository: Repository,
+    file: CommittedFileChange
+  ): Promise<void> {
+    return this.appStore._changePullRequestFileSelection(repository, file)
+  }
+
+  /**
+   * Set the width of the file list column in the pull request files changed
+   */
+  public setPullRequestFileListWidth(width: number): Promise<void> {
+    return this.appStore._setPullRequestFileListWidth(width)
+  }
+
+  /**
+   * Reset the width of the file list column in the pull request files changed
+   */
+  public resetPullRequestFileListWidth(): Promise<void> {
+    return this.appStore._resetPullRequestFileListWidth()
+  }
+
+  public updatePullRequestBaseBranch(repository: Repository, branch: Branch) {
+    this.appStore._updatePullRequestBaseBranch(repository, branch)
+  }
+
+  /**
+   * Attempts to quit the app if it's not updating, unless requested to quit
+   * even if it is updating.
+   *
+   * @param evenIfUpdating Whether to quit even if the app is updating.
+   */
+  public quitApp(evenIfUpdating: boolean) {
+    this.appStore._quitApp(evenIfUpdating)
+  }
+
+  /**
+   * Cancels quitting the app. This could be needed if, on macOS, the user tries
+   * to quit the app while an update is in progress, but then after being
+   * informed about the issues that could cause they decided to not close the
+   * app yet.
+   */
+  public cancelQuittingApp() {
+    this.appStore._cancelQuittingApp()
+  }
+
+  /**
+   * Sets the user's preference for which pull request suggested next action to
+   * use
+   */
+  public setPullRequestSuggestedNextAction(
+    value: PullRequestSuggestedNextAction
+  ) {
+    return this.appStore._setPullRequestSuggestedNextAction(value)
+  }
+
+  public appFocusedElementChanged() {
+    this.appStore._appFocusedElementChanged()
+  }
+
+  public updateCachedRepoRulesets(rulesets: Array<IAPIRepoRuleset | null>) {
+    this.appStore._updateCachedRepoRulesets(rulesets)
+  }
+
+  public onChecksFailedNotification(
+    repository: RepositoryWithGitHubRepository,
+    pullRequest: PullRequest,
+    checks: ReadonlyArray<IRefCheck>
+  ) {
+    this.appStore.onChecksFailedNotification(repository, pullRequest, checks)
+  }
+
+  public setUnderlineLinksSetting(underlineLinks: boolean) {
+    return this.appStore._updateUnderlineLinks(underlineLinks)
+  }
+
+  public setDiffCheckMarksSetting(diffCheckMarks: boolean) {
+    return this.appStore._updateShowDiffCheckMarks(diffCheckMarks)
+  }
+
+  public setCanFilterChanges(canFilterChanges: boolean) {
+    return this.appStore._updateCanFilterChanges(canFilterChanges)
+  }
+
+  public testPruneBranches() {
+    return this.appStore._testPruneBranches()
+  }
+
+  public editGlobalGitConfig() {
+    return this.appStore._editGlobalGitConfig()
   }
 }

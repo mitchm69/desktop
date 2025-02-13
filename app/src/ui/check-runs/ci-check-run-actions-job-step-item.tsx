@@ -1,14 +1,19 @@
 import * as React from 'react'
 import { Octicon } from '../octicons'
+import * as octicons from '../octicons/octicons.generated'
 import classNames from 'classnames'
 import {
   getClassNameForCheck,
   getSymbolForLogStep,
 } from '../branches/ci-status'
 import { IAPIWorkflowJobStep } from '../../lib/api'
-import { getFormattedCheckRunDuration } from '../../lib/ci-checks/ci-checks'
+import {
+  getFormattedCheckRunDuration,
+  getFormattedCheckRunLongDuration,
+} from '../../lib/ci-checks/ci-checks'
 import { TooltippedContent } from '../lib/tooltipped-content'
 import { TooltipDirection } from '../lib/tooltip'
+import { Button } from '../lib/button'
 
 interface ICICheckRunActionsJobStepListItemProps {
   readonly step: IAPIWorkflowJobStep
@@ -18,15 +23,13 @@ interface ICICheckRunActionsJobStepListItemProps {
   readonly onViewJobStepExternally: (step: IAPIWorkflowJobStep) => void
 }
 
-export class CICheckRunActionsJobStepListItem extends React.PureComponent<
-  ICICheckRunActionsJobStepListItemProps
-> {
+export class CICheckRunActionsJobStepListItem extends React.PureComponent<ICICheckRunActionsJobStepListItemProps> {
   private onViewJobStepExternally = () => {
     this.props.onViewJobStepExternally(this.props.step)
   }
 
   private onStepHeaderRef = (step: IAPIWorkflowJobStep) => {
-    return (stepHeaderRef: HTMLDivElement | null) => {
+    return (stepHeaderRef: HTMLLIElement | null) => {
       if (
         this.props.firstFailedStep !== undefined &&
         step.number === this.props.firstFailedStep.number &&
@@ -40,9 +43,12 @@ export class CICheckRunActionsJobStepListItem extends React.PureComponent<
   public render() {
     const { step } = this.props
     return (
-      <div
-        className="ci-check-run-job-step list-item"
+      <li
+        className="ci-check-run-job-step"
         ref={this.onStepHeaderRef(step)}
+        aria-label={`${step.name}, ${getFormattedCheckRunLongDuration(
+          step
+        )}, ${getClassNameForCheck(step)}`}
       >
         <div className="job-step-status-symbol">
           <Octicon
@@ -58,16 +64,25 @@ export class CICheckRunActionsJobStepListItem extends React.PureComponent<
           className="job-step-name"
           tooltip={step.name}
           onlyWhenOverflowed={true}
-          tagName="div"
+          tagName="span"
           direction={TooltipDirection.NORTH}
         >
-          <span onClick={this.onViewJobStepExternally}>{step.name}</span>
+          {step.name}
         </TooltippedContent>
 
         <div className="job-step-duration">
           {getFormattedCheckRunDuration(step)}
         </div>
-      </div>
+        <Button
+          role="link"
+          className="view-check-externally"
+          onClick={this.onViewJobStepExternally}
+          tooltip={`View ${step.name} on GitHub`}
+          ariaLabel={`View ${step.name} on GitHub`}
+        >
+          <Octicon symbol={octicons.linkExternal} />
+        </Button>
+      </li>
     )
   }
 }

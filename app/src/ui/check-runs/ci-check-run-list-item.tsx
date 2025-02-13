@@ -3,21 +3,18 @@ import { IRefCheck } from '../../lib/ci-checks/ci-checks'
 import { Octicon } from '../octicons'
 import { getClassNameForCheck, getSymbolForCheck } from '../branches/ci-status'
 import classNames from 'classnames'
-import * as OcticonSymbol from '../octicons/octicons.generated'
+import * as octicons from '../octicons/octicons.generated'
 import { TooltippedContent } from '../lib/tooltipped-content'
 import { CICheckRunActionsJobStepList } from './ci-check-run-actions-job-step-list'
 import { IAPIWorkflowJobStep } from '../../lib/api'
 import { TooltipDirection } from '../lib/tooltip'
+import { Button } from '../lib/button'
+import { CICheckRunNoStepItem } from './ci-check-run-no-steps'
+import { CICheckRunStepListHeader } from './ci-check-run-step-list-header'
 
 interface ICICheckRunListItemProps {
   /** The check run to display **/
   readonly checkRun: IRefCheck
-
-  /** Whether call for actions logs is pending */
-  readonly loadingActionLogs: boolean
-
-  /** Whether tcall for actions workflows is pending */
-  readonly loadingActionWorkflows: boolean
 
   /** Whether to show the logs for this check run */
   readonly isCheckRunExpanded: boolean
@@ -31,6 +28,17 @@ interface ICICheckRunListItemProps {
   /** Whether check runs can be expanded. Default: false */
   readonly notExpandable?: boolean
 
+  /** Showing a condensed view */
+  readonly isCondensedView?: boolean
+
+  /**
+   * When the list item is displayed in the rerun dialog, there are no sub
+   * elements or view so they are not headers.
+   *
+   * Default: true
+   **/
+  readonly isHeader?: false
+
   /** Callback for when a check run is clicked */
   readonly onCheckRunExpansionToggleClick: (checkRun: IRefCheck) => void
 
@@ -42,12 +50,13 @@ interface ICICheckRunListItemProps {
     checkRun: IRefCheck,
     step: IAPIWorkflowJobStep
   ) => void
+
+  /** Callback to rerun a job*/
+  readonly onRerunJob?: (checkRun: IRefCheck) => void
 }
 
 /** The CI check list item. */
-export class CICheckRunListItem extends React.PureComponent<
-  ICICheckRunListItemProps
-> {
+export class CICheckRunListItem extends React.PureComponent<ICICheckRunListItemProps> {
   private toggleCheckRunExpansion = () => {
     this.props.onCheckRunExpansionToggleClick(this.props.checkRun)
   }
@@ -58,6 +67,14 @@ export class CICheckRunListItem extends React.PureComponent<
 
   private onViewJobStep = (step: IAPIWorkflowJobStep) => {
     this.props.onViewJobStep?.(this.props.checkRun, step)
+  }
+
+  private rerunJob = () => {
+    if (this.props.checkRun.actionJobSteps === undefined) {
+      return
+    }
+
+    this.props.onRerunJob?.(this.props.checkRun)
   }
 
   private renderCheckStatusSymbol = (): JSX.Element => {
@@ -77,18 +94,9 @@ export class CICheckRunListItem extends React.PureComponent<
   }
 
   private renderCheckJobStepToggle = (): JSX.Element | null => {
-    const {
-      checkRun,
-      isCheckRunExpanded,
-      selectable,
-      notExpandable,
-    } = this.props
+    const { isCheckRunExpanded, selectable, notExpandable } = this.props
 
-    if (
-      checkRun.actionJobSteps === undefined ||
-      selectable ||
-      notExpandable === true
-    ) {
+    if (selectable || notExpandable) {
       return null
     }
 
@@ -96,9 +104,7 @@ export class CICheckRunListItem extends React.PureComponent<
       <div className="job-step-toggled-indicator">
         <Octicon
           symbol={
-            isCheckRunExpanded
-              ? OcticonSymbol.chevronDown
-              : OcticonSymbol.chevronUp
+            isCheckRunExpanded ? octicons.chevronUp : octicons.chevronDown
           }
         />
       </div>
@@ -106,56 +112,114 @@ export class CICheckRunListItem extends React.PureComponent<
   }
 
   private renderCheckRunName = (): JSX.Element => {
-    const { name, description } = this.props.checkRun
+    const { checkRun, isCondensedView, isHeader } = this.props
+    const { name, description } = checkRun
     return (
       <div className="ci-check-list-item-detail">
         <TooltippedContent
+          id={`check-run-header-${checkRun.id}`}
           className="ci-check-name"
           tooltip={name}
           onlyWhenOverflowed={true}
-          tagName="div"
+          tagName={isHeader === false ? 'span' : 'h3'}
           direction={TooltipDirection.NORTH}
         >
-          <span
-            className={classNames({
-              isLink: this.props.onViewCheckExternally !== undefined,
-            })}
-            onClick={this.onViewCheckExternally}
-          >
-            {name}
-          </span>
+          {name}
         </TooltippedContent>
 
-        <div className="ci-check-description">{description}</div>
+        {isCondensedView ? null : (
+          <div className="ci-check-description">{description}</div>
+        )}
+      </div>
+    )
+  }
+
+  private renderCheckRunListItem = (): JSX.Element | null => {
+    const {
+      checkRun,
+      selectable,
+      notExpandable,
+      isCheckRunExpanded,
+      selected,
+      isCondensedView,
+    } = this.props
+
+    const classes = classNames('ci-check-list-item', {
+      sticky: isCheckRunExpanded,
+      selected,
+      condensed: isCondensedView,
+    })
+
+    const content = (
+      <>
+        {this.renderCheckStatusSymbol()}
+        {this.renderCheckRunName()}
+        {this.renderCheckJobStepToggle()}
+      </>
+    )
+
+    if (!selectable && notExpandable) {
+      return <div className={classes}>{content}</div>
+    }
+
+    return (
+      <Button
+        className={classes}
+        onClick={this.toggleCheckRunExpansion}
+        ariaExpanded={!selectable ? this.props.isCheckRunExpanded : undefined}
+        ariaControls={`checkRun-${checkRun.id}`}
+      >
+        {content}
+      </Button>
+    )
+  }
+
+  public renderStepsRegion() {
+    const { isCheckRunExpanded, checkRun } = this.props
+
+    if (!isCheckRunExpanded) {
+      return null
+    }
+
+    const areNoSteps = checkRun.actionJobSteps === undefined
+
+    const classes = classNames('ci-steps-container', {
+      'no-steps': areNoSteps,
+    })
+
+    return (
+      <div
+        role="region"
+        className={classes}
+        id={`checkrun-${checkRun.id}`}
+        aria-labelledby={`check-run-header-${checkRun.id}`}
+      >
+        <CICheckRunStepListHeader
+          checkRun={checkRun}
+          onRerunJob={this.rerunJob}
+          onViewCheckExternally={this.onViewCheckExternally}
+        />
+
+        {areNoSteps ? (
+          <CICheckRunNoStepItem
+            onViewCheckExternally={this.onViewCheckExternally}
+          />
+        ) : (
+          <CICheckRunActionsJobStepList
+            steps={checkRun.actionJobSteps}
+            onViewJobStep={this.onViewJobStep}
+          />
+        )}
       </div>
     )
   }
 
   public render() {
-    const { checkRun, isCheckRunExpanded } = this.props
-
-    const classes = classNames('ci-check-list-item', 'list-item', {
-      sticky: isCheckRunExpanded,
-      selected: this.props.selected,
-    })
     return (
-      <div className="ci-check-list-item-group">
-        <div
-          className={classes}
-          onClick={this.toggleCheckRunExpansion}
-          tabIndex={0}
-        >
-          {this.renderCheckStatusSymbol()}
-          {this.renderCheckRunName()}
-          {this.renderCheckJobStepToggle()}
-        </div>
-        {isCheckRunExpanded && checkRun.actionJobSteps !== undefined ? (
-          <CICheckRunActionsJobStepList
-            steps={checkRun.actionJobSteps}
-            onViewJobStep={this.onViewJobStep}
-          />
-        ) : null}
-      </div>
+      <>
+        {this.renderCheckRunListItem()}
+        {this.renderStepsRegion()}
+      </>
     )
   }
 }

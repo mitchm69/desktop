@@ -3,6 +3,8 @@ import * as Path from 'path'
 import { clamp } from '../../lib/clamp'
 import { Tooltip } from './tooltip'
 import { createObservableRef } from './observable-ref'
+import { IMatches } from '../../lib/fuzzy-find'
+import { HighlightText } from './highlight-text'
 
 interface IPathTextProps {
   /**
@@ -17,6 +19,9 @@ interface IPathTextProps {
    * though never updated after the initial measurement.
    */
   readonly availableWidth?: number
+
+  /** The characters in the file path to highlight */
+  readonly matches?: IMatches
 }
 
 interface IPathDisplayState {
@@ -86,8 +91,8 @@ export function truncateMid(value: string, length: number) {
   }
 
   const mid = (length - 1) / 2
-  const pre = value.substr(0, Math.floor(mid))
-  const post = value.substr(value.length - Math.ceil(mid))
+  const pre = value.substring(0, Math.floor(mid))
+  const post = value.substring(value.length - Math.ceil(mid))
 
   return `${pre}…${post}`
 }
@@ -127,8 +132,8 @@ export function truncatePath(path: string, length: number) {
     return truncateMid(path, length)
   }
 
-  const pre = path.substr(0, length - filenameLength - 2)
-  const post = path.substr(lastSeparator)
+  const pre = path.substring(0, length - filenameLength - 2)
+  const post = path.substring(lastSeparator)
 
   return `${pre}…${post}`
 }
@@ -138,18 +143,19 @@ export function truncatePath(path: string, length: number) {
  *
  * @param normalizedPath The normalized path (i.e. no '.' or '..' characters in path)
  */
-export function extract(
-  normalizedPath: string
-): { normalizedFileName: string; normalizedDirectory: string } {
-  // for untracked submodules, the status entry is returned as a directory,
-  // with a trailing / which causes the directory to be trimmed in a weird way
-  // below. let's try and resolve this here
-  normalizedPath = normalizedPath.endsWith('/')
-    ? normalizedPath.substr(0, normalizedPath.length - 1)
+export function extract(normalizedPath: string): {
+  normalizedFileName: string
+  normalizedDirectory: string
+} {
+  // for untracked submodules the status entry is returned as a path with a
+  // trailing path separator which causes the directory to be trimmed in a weird
+  // way below. let's try to resolve this here
+  normalizedPath = normalizedPath.endsWith(Path.sep)
+    ? normalizedPath.substring(0, normalizedPath.length - 1)
     : normalizedPath
 
   const normalizedFileName = Path.basename(normalizedPath)
-  const normalizedDirectory = normalizedPath.substr(
+  const normalizedDirectory = normalizedPath.substring(
     0,
     normalizedPath.length - normalizedFileName.length
   )
@@ -215,8 +221,8 @@ function createPathDisplayState(
     }
   }
 
-  const fileText = truncatedPath.substr(directoryLength)
-  const directoryText = truncatedPath.substr(0, directoryLength)
+  const fileText = truncatedPath.substring(directoryLength)
+  const directoryText = truncatedPath.substring(0, directoryLength)
 
   return { normalizedPath, directoryText, fileText, length }
 }
@@ -288,26 +294,63 @@ export class PathText extends React.PureComponent<
   }
 
   public render() {
+    const matchesInDirectoryText = this.props.matches?.title.filter(
+      m => m <= this.state.directoryText.length - 1
+    )
+
+    const matchesNotInDirectoryText = this.props.matches?.title
+      .map(
+        m => m - (this.state.normalizedPath.length - this.state.fileText.length)
+      )
+      .filter(m => m >= 0)
+
+    const directoryElementText = matchesInDirectoryText ? (
+      <HighlightText
+        text={this.state.directoryText}
+        highlight={matchesInDirectoryText}
+      />
+    ) : (
+      this.state.directoryText
+    )
+
     const directoryElement =
       this.state.directoryText && this.state.directoryText.length ? (
-        <span className="dirname">{this.state.directoryText}</span>
+        <span className="dirname">{directoryElementText}</span>
       ) : null
 
     const truncated = this.state.length < this.state.normalizedPath.length
+
+    const fileText = matchesNotInDirectoryText ? (
+      <HighlightText
+        text={this.state.fileText}
+        highlight={matchesNotInDirectoryText}
+      />
+    ) : (
+      this.state.fileText
+    )
+
+    const tooltipText = this.props.matches ? (
+      <HighlightText
+        text={this.state.normalizedPath}
+        highlight={this.props.matches.title}
+      />
+    ) : (
+      this.state.normalizedPath
+    )
 
     return (
       <div className="path-text-component" ref={this.pathElementRef}>
         <span ref={this.onPathInnerElementRef}>
           {directoryElement}
-          <span className="filename">{this.state.fileText}</span>
+          <span className="filename">{fileText}</span>
         </span>
         {truncated && (
           <Tooltip
             target={this.pathElementRef}
             interactive={true}
-            className="selectable"
+            className="selectable path-text"
           >
-            {this.state.normalizedPath}
+            {tooltipText}
           </Tooltip>
         )}
       </div>

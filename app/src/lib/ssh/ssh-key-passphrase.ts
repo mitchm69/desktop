@@ -1,8 +1,14 @@
-import { getFileHash } from '../file-system'
+import { getFileHash } from '../get-file-hash'
 import { TokenStore } from '../stores'
+import {
+  getSSHCredentialStoreKey,
+  setMostRecentSSHCredential,
+  setSSHCredential,
+} from './ssh-credential-storage'
 
-const appName = __DEV__ ? 'GitHub Desktop Dev' : 'GitHub Desktop'
-const SSHKeyPassphraseTokenStoreKey = `${appName} - SSH key passphrases`
+const SSHKeyPassphraseTokenStoreKey = getSSHCredentialStoreKey(
+  'SSH key passphrases'
+)
 
 async function getHashForSSHKey(keyPath: string) {
   return getFileHash(keyPath, 'sha256')
@@ -19,25 +25,8 @@ export async function getSSHKeyPassphrase(keyPath: string) {
   }
 }
 
-type SSHKeyPassphraseEntry = {
-  /** Hash of the SSH key file. */
-  keyHash: string
-
-  /** Passphrase for the SSH key. */
-  passphrase: string
-}
-
 /**
- * This map contains the SSH key passphrases that are pending to be stored.
- * What this means is that a git operation is currently in progress, and the
- * user wanted to store the passphrase for the SSH key, however we don't want
- * to store it until we know the git operation finished successfully.
- */
-const SSHKeyPassphrasesToStore = new Map<string, SSHKeyPassphraseEntry>()
-
-/**
- * Keeps the SSH key passphrase in memory to be stored later if the ongoing git
- * operation succeeds.
+ * Stores the SSH key passphrase.
  *
  * @param operationGUID A unique identifier for the ongoing git operation. In
  *                      practice, it will always be the trampoline token for the
@@ -45,34 +34,47 @@ const SSHKeyPassphrasesToStore = new Map<string, SSHKeyPassphraseEntry>()
  * @param keyPath       Path to the SSH key.
  * @param passphrase    Passphrase for the SSH key.
  */
-export async function keepSSHKeyPassphraseToStore(
+export async function setSSHKeyPassphrase(
   operationGUID: string,
   keyPath: string,
   passphrase: string
 ) {
   try {
     const keyHash = await getHashForSSHKey(keyPath)
-    SSHKeyPassphrasesToStore.set(operationGUID, { keyHash, passphrase })
+
+    await setSSHCredential(
+      operationGUID,
+      SSHKeyPassphraseTokenStoreKey,
+      keyHash,
+      passphrase
+    )
   } catch (e) {
     log.error('Could not store passphrase for SSH key:', e)
   }
 }
 
-/** Removes the SSH key passphrase from memory. */
-export function removePendingSSHKeyPassphraseToStore(operationGUID: string) {
-  SSHKeyPassphrasesToStore.delete(operationGUID)
-}
+/**
+ * Keeps the SSH credential details in memory to be deleted later if the ongoing
+ * git operation fails to authenticate.
+ *
+ * @param operationGUID A unique identifier for the ongoing git operation. In
+ *                      practice, it will always be the trampoline secret for the
+ *                      ongoing git operation.
+ * @param keyPath       Path of the SSH key.
+ */
+export async function setMostRecentSSHKeyPassphrase(
+  operationGUID: string,
+  keyPath: string
+) {
+  try {
+    const keyHash = await getHashForSSHKey(keyPath)
 
-/** Stores a pending SSH key passphrase if the operation succeeded. */
-export async function storePendingSSHKeyPassphrase(operationGUID: string) {
-  const entry = SSHKeyPassphrasesToStore.get(operationGUID)
-  if (entry === undefined) {
-    return
+    setMostRecentSSHCredential(
+      operationGUID,
+      SSHKeyPassphraseTokenStoreKey,
+      keyHash
+    )
+  } catch (e) {
+    log.error('Could not store passphrase for SSH key:', e)
   }
-
-  await TokenStore.setItem(
-    SSHKeyPassphraseTokenStoreKey,
-    entry.keyHash,
-    entry.passphrase
-  )
 }
